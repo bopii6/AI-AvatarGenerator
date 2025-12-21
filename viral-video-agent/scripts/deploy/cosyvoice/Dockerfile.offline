@@ -1,0 +1,25 @@
+# CosyVoice 离线构建 Dockerfile
+# 使用本地源码，避免从 GitHub 克隆
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /opt/CosyVoice
+
+# 使用阿里云镜像源
+RUN sed -i s@/archive.ubuntu.com/@/mirrors.aliyun.com/@g /etc/apt/sources.list
+RUN apt-get update -y
+RUN apt-get -y install git unzip git-lfs g++ ffmpeg
+RUN git lfs install
+
+# 清除 PyTorch 镜像自带的微软 pip 源配置，强制使用阿里云
+RUN rm -f /opt/conda/pip.conf /root/.config/pip/pip.conf 2>/dev/null || true
+RUN mkdir -p /root/.config/pip && echo "[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple/\ntrusted-host = mirrors.aliyun.com\ntimeout = 120" > /root/.config/pip/pip.conf
+
+# 复制本地源码（而不是从 GitHub 克隆）
+COPY . /opt/CosyVoice/CosyVoice
+
+# 安装 Python 依赖（使用阿里云镜像，增加超时时间）
+RUN cd CosyVoice && pip3 install --timeout 120 -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host=mirrors.aliyun.com --no-cache-dir
+
+# 编译 gRPC protobuf
+RUN cd CosyVoice/runtime/python/grpc && python3 -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. cosyvoice.proto

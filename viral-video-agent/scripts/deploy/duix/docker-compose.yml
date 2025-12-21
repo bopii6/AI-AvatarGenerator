@@ -1,0 +1,42 @@
+services:
+  # 数字人视频合成服务（GPU）
+  duix-avatar-gen-video:
+    image: guiji2025/duix.avatar
+    container_name: duix-avatar-gen-video
+    restart: always
+    gpus:
+      - all
+    command: ["python", "/code/app_local.py"]
+    networks: [duix-net]
+    volumes:
+      - duix_data:/code/data
+
+  # 上传/文件服务（把桌面端上传的音频写到共享目录 /code/data）
+  duix-file-api:
+    image: python:3.11-slim
+    container_name: duix-file-api
+    restart: always
+    command: ["python", "/app/duix_file_api.py"]
+    networks: [duix-net]
+    volumes:
+      - duix_data:/code/data
+      - ../../duix_file_api.py:/app/duix_file_api.py:ro
+
+  # 对外统一入口（固定 8383）
+  duix-proxy:
+    image: nginx:alpine
+    container_name: duix-proxy
+    restart: always
+    networks: [duix-net]
+    ports:
+      - "8383:8383"
+    volumes:
+      - ../../duix_nginx_proxy.conf:/etc/nginx/conf.d/default.conf:ro
+
+networks:
+  duix-net:
+    name: duix-net
+
+volumes:
+  duix_data:
+    name: duix_data

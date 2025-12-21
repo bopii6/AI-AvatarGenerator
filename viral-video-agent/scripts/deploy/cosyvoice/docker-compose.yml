@@ -1,0 +1,61 @@
+services:
+  # CosyVoice 官方引擎（GPU）
+  # 需要你先在本目录准备官方仓库：
+  #   cd scripts/deploy/cosyvoice
+  #   git clone https://github.com/FunAudioLLM/CosyVoice.git
+  # 然后 compose 会从 ./CosyVoice/runtime/python/Dockerfile 构建镜像
+  cosyvoice-engine:
+    build:
+      context: ./CosyVoice
+      dockerfile: ../Dockerfile.offline
+    image: cosyvoice:v1.0
+    container_name: cosyvoice-engine
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    environment:
+      - MODELSCOPE_CACHE=/root/.cache/modelscope
+    volumes:
+      # 模型缓存持久化：避免容器重建重复下载
+      - cosyvoice_modelscope_cache:/root/.cache/modelscope
+      # 修复上游 CosyVoice fastapi 的上传音频读取问题（避免 Format not recognised / Invalid file tensor）
+      - ../../cosyvoice_engine_patch/server.py:/opt/CosyVoice/CosyVoice/runtime/python/fastapi/server.py:ro
+    command: >
+      /bin/bash -lc "pip uninstall -y deepspeed || true;
+       python3 -c 'import matcha' >/dev/null 2>&1 || pip install -U matcha-tts;
+       cd /opt/CosyVoice/CosyVoice/runtime/python/fastapi
+       && python3 server.py --port 50000 --model_dir iic/CosyVoice-300M
+       && sleep infinity"
+    expose:
+      - "50000"
+
+  # 桌面端对接网关（对外 9090）
+  cosyvoice-api:
+    build:
+      context: ../../cosyvoice_server
+      dockerfile: Dockerfile
+    image: cosyvoice-api:latest
+    container_name: cosyvoice-api
+    restart: always
+    depends_on:
+      - cosyvoice-engine
+    ports:
+      - "9090:9090"
+    environment:
+      - COSYVOICE_ENGINE_URL=http://cosyvoice-engine:50000
+      - COSYVOICE_ENGINE_MODE=cross_lingual
+      - COSYVOICE_TARGET_SR=22050
+      - DATA_DIR=/data
+      - HOST=0.0.0.0
+      - PORT=9090
+    volumes:
+      - cosyvoice_api_data:/data
+
+volumes:
+  cosyvoice_modelscope_cache:
+  cosyvoice_api_data:

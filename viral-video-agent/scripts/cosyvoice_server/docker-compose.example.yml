@@ -1,0 +1,42 @@
+services:
+  # 1) CosyVoice 官方 FastAPI 引擎（GPU）
+  # 需要你在服务器上先 clone: https://github.com/FunAudioLLM/CosyVoice
+  # 然后把 build.context 指向它的 runtime/python 目录
+  cosyvoice-engine:
+    build:
+      context: ./CosyVoice/runtime/python
+      dockerfile: Dockerfile
+    command: >
+      /bin/bash -lc
+      "cd /opt/CosyVoice/CosyVoice/runtime/python/fastapi
+       && python3 server.py --port 50000 --model_dir iic/CosyVoice-300M
+       && sleep infinity"
+    ports:
+      - "50000:50000"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # 2) 桌面端对接网关（对外 9090）
+  cosyvoice-api:
+    build:
+      context: .
+      dockerfile: scripts/cosyvoice_server/Dockerfile
+    ports:
+      - "9090:9090"
+    environment:
+      - COSYVOICE_ENGINE_URL=http://cosyvoice-engine:50000
+      - COSYVOICE_ENGINE_MODE=cross_lingual
+      - COSYVOICE_TARGET_SR=22050
+      - DATA_DIR=/data
+    volumes:
+      - ./cosyvoice_api_data:/data
+    depends_on:
+      - cosyvoice-engine
+

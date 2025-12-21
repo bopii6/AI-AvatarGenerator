@@ -1,0 +1,667 @@
+/* 全局样式 - 干净清晰的深色主题 */
+:root {
+  --primary-color: #00d4aa;
+  --primary-strong: #00b894;
+  --accent: #55efc4;
+  --text-primary: #ffffff;
+  --text-secondary: #a0a0a0;
+  --card-bg: rgba(30, 32, 38, 0.95);
+  --panel-bg: rgba(22, 24, 28, 0.98);
+  --border: rgba(255, 255, 255, 0.08);
+  --bg-color: #12141a;
+  --sidebar-width: 240px;
+  --header-height: 80px;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --radius: 16px;
+  --blur: saturate(140%) blur(12px);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  background: linear-gradient(135deg, #12141a 0%, #1a1d24 50%, #0d0f14 100%);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 顶部工具栏 */
+.header {
+  height: var(--header-height);
+  background: rgba(18, 20, 26, 0.98);
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  box-shadow: 0 2px 20px rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-title {
+  color: var(--text-primary);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-right: 24px;
+}
+
+.brand-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #00d4aa, #00b894);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  box-shadow: 0 4px 16px rgba(0, 212, 170, 0.3);
+}
+
+.brand-name {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.brand-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.header-input {
+  flex: 1;
+  max-width: 620px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.header-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 0 6px rgba(109, 220, 255, 0.08);
+}
+
+.status-dot.ready {
+  background: #4ade80;
+}
+
+.status-dot.busy {
+  background: #f7b733;
+}
+
+.status-dot.warn {
+  background: #ff6b6b;
+}
+
+.status-text {
+  font-weight: 600;
+}
+
+.header-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+/* 主内容区 */
+.main-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* 左侧步骤导航 */
+.sidebar {
+  width: var(--sidebar-width);
+  background: rgba(18, 20, 26, 0.98);
+  backdrop-filter: var(--blur);
+  border-right: 1px solid var(--border);
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+
+/* 中间操作区 */
+.workspace {
+  flex: 1;
+  padding: 28px 22px;
+  overflow-y: auto;
+  background: transparent;
+}
+
+/* 右侧预览区 */
+.preview-panel {
+  width: 360px;
+  background: rgba(18, 20, 26, 0.98);
+  border-left: 1px solid var(--border);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  backdrop-filter: var(--blur);
+}
+
+.preview-title {
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.preview-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 300px;
+}
+
+/* 步骤卡片 */
+.step-card {
+  background: var(--card-bg);
+  border-radius: var(--radius);
+  padding: 26px;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  backdrop-filter: var(--blur);
+}
+
+.step-card-title {
+  font-size: 19px;
+  font-weight: 700;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+}
+
+.workbench-panel {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03)) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  backdrop-filter: var(--blur);
+}
+
+.workbench-panel .ant-card-head {
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.workbench-panel .ant-card-head-title {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.workbench-panel .ant-card-body {
+  color: var(--text-primary);
+}
+
+.ant-steps .ant-steps-item-title {
+  color: var(--text-primary) !important;
+}
+
+.ant-steps .ant-steps-item-description {
+  color: var(--text-secondary) !important;
+}
+
+.ant-steps-vertical .ant-steps-item-title {
+  color: var(--text-primary) !important;
+}
+
+.ant-steps-item-description {
+  color: var(--text-secondary) !important;
+}
+
+.ant-steps-item-icon {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--border) !important;
+}
+
+.ant-steps-item-process .ant-steps-item-icon {
+  background: linear-gradient(120deg, var(--primary-strong), var(--primary-color));
+  border-color: transparent !important;
+  box-shadow: 0 10px 30px rgba(109, 220, 255, 0.3);
+}
+
+.ant-btn-primary {
+  border: none;
+  font-weight: 600;
+  background: linear-gradient(120deg, var(--primary-color), var(--primary-strong));
+  box-shadow: 0 15px 35px rgba(109, 220, 255, 0.28);
+}
+
+.ant-btn-primary:hover {
+  filter: brightness(1.05);
+}
+
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-lg {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: var(--text-primary);
+}
+
+.ant-input::placeholder {
+  color: #d0d8f0;
+}
+
+.ant-btn[disabled],
+.ant-btn[disabled]:hover {
+  color: rgba(255, 255, 255, 0.55) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.ant-steps-item-wait .ant-steps-item-icon>.ant-steps-icon {
+  color: var(--text-secondary);
+}
+
+/* 动画 */
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.loading {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* 响应式 */
+@media (max-width: 1200px) {
+  .preview-panel {
+    width: 300px;
+  }
+}
+
+/* ============================================ */
+/* Ant Design 暗色主题覆盖 - 蓝绿色主题 */
+/* ============================================ */
+
+/* Modal 弹窗暗色主题 */
+.ant-modal-content {
+  background: linear-gradient(145deg, #1a1d24 0%, #12141a 100%) !important;
+  border: 1px solid rgba(0, 212, 170, 0.15) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 25px 80px rgba(0, 0, 0, 0.6), 0 0 1px rgba(0, 212, 170, 0.2) !important;
+}
+
+.ant-modal-header {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  padding: 20px 24px !important;
+}
+
+.ant-modal-title {
+  color: #fff !important;
+  font-size: 18px !important;
+  font-weight: 600 !important;
+}
+
+.ant-modal-close {
+  color: rgba(255, 255, 255, 0.5) !important;
+}
+
+.ant-modal-close:hover {
+  color: #fff !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+.ant-modal-body {
+  padding: 24px !important;
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.ant-modal-footer {
+  background: transparent !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+  padding: 16px 24px !important;
+}
+
+/* 输入框暗色主题 */
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-lg,
+.ant-input-number,
+.ant-select-selector {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #fff !important;
+  border-radius: 10px !important;
+}
+
+.ant-input:hover,
+.ant-input-affix-wrapper:hover,
+.ant-input:focus,
+.ant-input-affix-wrapper-focused {
+  border-color: rgba(0, 212, 170, 0.5) !important;
+  box-shadow: 0 0 0 2px rgba(0, 212, 170, 0.15) !important;
+}
+
+.ant-input::placeholder {
+  color: rgba(255, 255, 255, 0.35) !important;
+}
+
+.ant-input-lg {
+  padding: 12px 16px !important;
+  font-size: 15px !important;
+}
+
+/* Select 下拉框暗色主题 */
+.ant-select-dropdown {
+  background: #1a1d24 !important;
+  border: 1px solid rgba(0, 212, 170, 0.15) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4) !important;
+}
+
+.ant-select-item {
+  color: rgba(255, 255, 255, 0.85) !important;
+  border-radius: 8px !important;
+}
+
+.ant-select-item-option-active,
+.ant-select-item-option-selected {
+  background: rgba(0, 212, 170, 0.15) !important;
+}
+
+.ant-select-selection-placeholder {
+  color: rgba(255, 255, 255, 0.35) !important;
+}
+
+/* Card 卡片暗色主题 */
+.ant-card {
+  background: rgba(255, 255, 255, 0.02) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 16px !important;
+}
+
+.ant-card-head {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  color: #fff !important;
+}
+
+.ant-card-head-title {
+  color: #fff !important;
+  font-weight: 600 !important;
+}
+
+.ant-card-body {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* Button 按钮优化 */
+.ant-btn {
+  border-radius: 10px !important;
+  font-weight: 500 !important;
+  transition: all 0.2s ease !important;
+}
+
+.ant-btn-default {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.ant-btn-default:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: #fff !important;
+}
+
+.ant-btn-primary {
+  background: linear-gradient(135deg, #00d4aa, #00b894) !important;
+  border: none !important;
+  box-shadow: 0 4px 20px rgba(0, 212, 170, 0.35) !important;
+}
+
+.ant-btn-primary:hover {
+  background: linear-gradient(135deg, #00e6b8, #00d4aa) !important;
+  box-shadow: 0 6px 28px rgba(0, 212, 170, 0.5) !important;
+  transform: translateY(-1px);
+}
+
+.ant-btn-lg {
+  height: 48px !important;
+  padding: 0 24px !important;
+  font-size: 15px !important;
+  border-radius: 12px !important;
+}
+
+/* Upload 上传组件暗色主题 */
+.ant-upload-wrapper .ant-upload-drag {
+  background: rgba(255, 255, 255, 0.02) !important;
+  border: 2px dashed rgba(255, 255, 255, 0.12) !important;
+  border-radius: 14px !important;
+}
+
+.ant-upload-wrapper .ant-upload-drag:hover {
+  border-color: rgba(22, 119, 255, 0.5) !important;
+  background: rgba(22, 119, 255, 0.05) !important;
+}
+
+.ant-upload-drag-icon,
+.ant-upload-text,
+.ant-upload-hint {
+  color: rgba(255, 255, 255, 0.65) !important;
+}
+
+/* Progress 进度条暗色主题 */
+.ant-progress-inner {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Tag 标签暗色主题 */
+.ant-tag {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: rgba(255, 255, 255, 0.85) !important;
+  border-radius: 6px !important;
+}
+
+.ant-tag-blue {
+  background: rgba(22, 119, 255, 0.15) !important;
+  border-color: rgba(22, 119, 255, 0.3) !important;
+  color: #4096ff !important;
+}
+
+.ant-tag-green {
+  background: rgba(82, 196, 26, 0.15) !important;
+  border-color: rgba(82, 196, 26, 0.3) !important;
+  color: #52c41a !important;
+}
+
+.ant-tag-purple {
+  background: rgba(114, 46, 209, 0.15) !important;
+  border-color: rgba(114, 46, 209, 0.3) !important;
+  color: #9254de !important;
+}
+
+.ant-tag-gold {
+  background: rgba(250, 173, 20, 0.15) !important;
+  border-color: rgba(250, 173, 20, 0.3) !important;
+  color: #faad14 !important;
+}
+
+/* Alert 提示暗色主题 */
+.ant-alert {
+  border-radius: 12px !important;
+}
+
+.ant-alert-warning {
+  background: rgba(250, 173, 20, 0.08) !important;
+  border-color: rgba(250, 173, 20, 0.2) !important;
+}
+
+.ant-alert-success {
+  background: rgba(82, 196, 26, 0.08) !important;
+  border-color: rgba(82, 196, 26, 0.2) !important;
+}
+
+.ant-alert-info {
+  background: rgba(22, 119, 255, 0.08) !important;
+  border-color: rgba(22, 119, 255, 0.2) !important;
+}
+
+.ant-alert-message {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.ant-alert-description {
+  color: rgba(255, 255, 255, 0.65) !important;
+}
+
+/* Tabs 标签页暗色主题 */
+.ant-tabs-nav::before {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.ant-tabs-tab {
+  color: rgba(255, 255, 255, 0.6) !important;
+}
+
+.ant-tabs-tab:hover {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #00d4aa !important;
+}
+
+/* Empty 空状态暗色主题 */
+.ant-empty-description {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.ant-empty-image svg {
+  fill: rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Typography 排版暗色主题 */
+.ant-typography {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.ant-typography.ant-typography-secondary {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.ant-typography.ant-typography-danger {
+  color: #ff4d4f !important;
+}
+
+/* Space 间距组件 - 确保暗色 */
+.ant-space {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* Tooltip 暗色主题 */
+.ant-tooltip-inner {
+  background: #1a1d24 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
+}
+
+.ant-tooltip-arrow::before {
+  background: #1a1d24 !important;
+}
+
+/* Radio 单选按钮暗色主题 */
+.ant-radio-button-wrapper {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(255, 255, 255, 0.65) !important;
+}
+
+.ant-radio-button-wrapper:hover {
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+.ant-radio-button-wrapper-checked {
+  background: rgba(0, 212, 170, 0.2) !important;
+  border-color: #00d4aa !important;
+  color: #00d4aa !important;
+}
+
+/* Message 消息提示暗色主题 */
+.ant-message-notice-content {
+  background: #1a1d24 !important;
+  border: 1px solid rgba(0, 212, 170, 0.15) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+  color: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* Spin 加载暗色主题 */
+.ant-spin-text {
+  color: rgba(255, 255, 255, 0.65) !important;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
