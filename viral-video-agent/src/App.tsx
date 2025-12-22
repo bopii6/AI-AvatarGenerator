@@ -53,6 +53,7 @@ function App() {
         setBatchRewrittenCopies,
         setDigitalHumanSelectedCopy,
         videoPath,
+        audioPath,
         inputAudioPath,
         rewrittenCopy,
         digitalHumanVideoPath,
@@ -115,11 +116,12 @@ function App() {
         setActiveKey(key)
 
         if (key === 'digitalHuman') {
-            requestService('duix')
+            // 数字人流程优先“先音频后视频”：没有音频时预热 cosyvoice，有音频后再切到 duix
+            requestService(audioPath ? 'duix' : 'cosyvoice')
         } else if (key === 'audio') {
             requestService('cosyvoice')
         }
-    }, [activeKey, requestService])
+    }, [activeKey, audioPath, requestService])
 
     const handleDownloadSingle = async (overrideUrl?: string) => {
         const targetUrl = overrideUrl || douyinUrl

@@ -687,11 +687,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             if (!voiceId) throw new Error('voiceId 为空')
 
             const { serverUrl, port } = getCloudVoiceRuntime()
+            const { serverUrl: cloudGpuServerUrl, videoPort: cloudGpuVideoPort } = getCloudGpuRuntime()
             const audioPath = await synthesizeWithVoice({
                 serverUrl,
                 port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
+                fallbackDownloadServerUrl: cloudGpuServerUrl,
+                fallbackDownloadPort: cloudGpuVideoPort,
             }, { voiceId, text })
 
             return { success: true, data: { audioPath } }

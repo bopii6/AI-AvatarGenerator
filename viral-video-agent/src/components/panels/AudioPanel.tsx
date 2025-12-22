@@ -21,7 +21,18 @@ function AudioPanel() {
     const [selectedCloudVoiceId, setSelectedCloudVoiceId] = useState<string>('')
     const [loading, setLoading] = useState(false)
     const [errorText, setErrorText] = useState('')
-    const { rewrittenCopy, originalCopy, audioPath, setAudioPath, setPreview, setActiveKey, digitalHumanGenerating } = useAppStore()
+    const {
+        rewrittenCopy,
+        originalCopy,
+        batchCopies,
+        digitalHumanSelectedCopy,
+        digitalHumanScriptConfirmed,
+        audioPath,
+        setAudioPath,
+        setPreview,
+        setActiveKey,
+        digitalHumanGenerating,
+    } = useAppStore()
 
     const { status: schedulerStatus, isRunning: isServiceRunning, preswitch } = useGpuScheduler()
     const schedulerOnline = !!schedulerStatus?.online
@@ -31,7 +42,9 @@ function AudioPanel() {
         && !!schedulerStatus?.servicesHealth?.cosyvoice
     const pendingLoadModelsRef = useRef(false)
 
-    const textToSpeak = rewrittenCopy || originalCopy
+    const needsTranscriptConfirm = batchCopies.length > 1
+    const transcriptConfirmed = !needsTranscriptConfirm || digitalHumanScriptConfirmed
+    const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
 
     // 读取用户选择的“克隆声音模型”
     useEffect(() => {
@@ -54,6 +67,10 @@ function AudioPanel() {
 
     const handleGenerate = async () => {
         if (!textToSpeak) return
+        if (!transcriptConfirmed) {
+            message.warning('请先在「数字人」中选择逐字稿并点击「确认用于出片」')
+            return
+        }
         if (digitalHumanGenerating) {
             message.warning('正在生成数字人视频，为避免云端服务切换导致失败，请等待完成后再生成音频')
             return
@@ -192,6 +209,14 @@ function AudioPanel() {
                         onClose={() => setErrorText('')}
                     />
                 )}
+                {needsTranscriptConfirm && !digitalHumanScriptConfirmed && (
+                    <Alert
+                        type="warning"
+                        showIcon
+                        message="请先确认逐字稿"
+                        description="你当前有多份逐字稿可选：请回到「数字人」面板选择其一并点击「确认用于出片」，再来合成音频。"
+                    />
+                )}
                 {!textToSpeak && (
                     <div style={{ padding: 24, background: '#fffbe6', borderRadius: 8, border: '1px solid #ffe58f' }}>
                         ⚠️ 请先完成文案提取或改写步骤
@@ -235,7 +260,7 @@ function AudioPanel() {
                     size="large"
                     loading={loading}
                     onClick={handleGenerate}
-                    disabled={digitalHumanGenerating || !textToSpeak || !cosyvoiceReady || !selectedCloudVoiceId}
+                    disabled={digitalHumanGenerating || !textToSpeak || !transcriptConfirmed || !cosyvoiceReady || !selectedCloudVoiceId}
                 >
                     生成音频
                 </Button>

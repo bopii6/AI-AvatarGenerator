@@ -141,6 +141,7 @@ function DigitalHumanPanel() {
     // 状态
     const [avatars, setAvatars] = useState<AvatarModel[]>([])
     const [selectedAvatarId, setSelectedAvatarId] = useState<string>('')
+    const [avatarsLoaded, setAvatarsLoaded] = useState(false)
     const [showNewAvatarModal, setShowNewAvatarModal] = useState(false)
     const [newAvatarName, setNewAvatarName] = useState('')
     const [newAvatarFile, setNewAvatarFile] = useState<File | null>(null)
@@ -152,6 +153,7 @@ function DigitalHumanPanel() {
     const selectedAvatar = avatars.find(a => a.id === selectedAvatarId)
     const hasAvatar = !!selectedAvatar
     const hasAudio = !!audioPath
+    const hasVideo = !!digitalHumanVideoPath
 
     const selectedCloudVoiceId = useMemo(() => {
         try {
@@ -192,6 +194,8 @@ function DigitalHumanPanel() {
 
     const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
     const hasText = textToSpeak.length > 0
+    const readyForVideo = transcriptConfirmed && hasAudio
+    const preferredService: 'duix' | 'cosyvoice' = readyForVideo ? 'duix' : 'cosyvoice'
 
     const didAutoLoadAvatarsRef = useRef(false)
 
@@ -244,6 +248,7 @@ function DigitalHumanPanel() {
             const result = await window.electronAPI?.invoke('cloud-gpu-get-avatars')
             if (result?.success) {
                 setAvatars(result.data || [])
+                setAvatarsLoaded(true)
                 if (result.data?.length > 0 && !selectedAvatarId) {
                     setSelectedAvatarId(result.data[0].id)
                 }
@@ -259,20 +264,22 @@ function DigitalHumanPanel() {
         await loadAvatars()
     }, [ensureDuixReady, loadAvatars])
 
-    // 初始化：尝试加载形象（必要时先切换到 duix）
+    // 音频就绪后再加载形象，避免 cosyvoice/duix 来回切换影响音频合成
     useEffect(() => {
+        if (!readyForVideo) return
         refreshAvatars()
-    }, [refreshAvatars])
+    }, [readyForVideo, refreshAvatars])
 
     // 若启动时先触发了切换，切换完成后自动拉一次形象列表（仅一次）
     useEffect(() => {
+        if (!readyForVideo) return
         if (didAutoLoadAvatarsRef.current) return
         if (!schedulerOnline) return
         if (schedulerStatus?.switching) return
         if (!isServiceRunning('duix')) return
         didAutoLoadAvatarsRef.current = true
         loadAvatars()
-    }, [loadAvatars, isServiceRunning, schedulerOnline, schedulerStatus?.switching, schedulerStatus?.currentService])
+    }, [readyForVideo, loadAvatars, isServiceRunning, schedulerOnline, schedulerStatus?.switching, schedulerStatus?.currentService])
 
     const handleSaveNewAvatar = async () => {
         if (!newAvatarFile || !newAvatarName.trim()) {
@@ -472,10 +479,10 @@ function DigitalHumanPanel() {
                             ✨ 口播数字人分身
                         </div>
                         <Typography.Text type="secondary" style={{ fontSize: 14 }}>
-                            选择形象 → 准备音频 → 一键生成专业口播视频
+                            确认逐字稿 → 准备音频 → 一键生成口播视频
                         </Typography.Text>
                     </div>
-                    <GpuServiceStatus requiredService="duix" />
+                    <GpuServiceStatus requiredService={preferredService} />
                 </div>
             </div>
 
@@ -488,21 +495,21 @@ function DigitalHumanPanel() {
             }}>
                 <StepIndicator
                     stepNumber={1}
-                    title="选择形象"
-                    completed={hasAvatar}
-                    active={!hasAvatar}
+                    title="确认逐字稿"
+                    completed={transcriptConfirmed}
+                    active={!transcriptConfirmed}
                 />
                 <StepIndicator
                     stepNumber={2}
                     title="准备音频"
                     completed={hasAudio}
-                    active={hasAvatar && !hasAudio}
+                    active={transcriptConfirmed && !hasAudio}
                 />
                 <StepIndicator
                     stepNumber={3}
                     title="生成视频"
-                    completed={false}
-                    active={hasAvatar && hasAudio}
+                    completed={hasVideo}
+                    active={transcriptConfirmed && hasAudio && !hasVideo}
                 />
             </div>
 
@@ -773,30 +780,52 @@ function DigitalHumanPanel() {
                                             我的数字人形象
                                         </Typography.Text>
                                     </div>
-                                    <Button
-                                        type="primary"
-                                        icon={<PlusOutlined />}
-                                        onClick={() => setShowNewAvatarModal(true)}
-                                        style={{
-                                            borderRadius: 8,
-                                            background: 'linear-gradient(135deg, #1677ff, #4096ff)',
-                                            border: 'none',
-                                        }}
-                                    >
-                                        创建新形象
-                                    </Button>
+                                    <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频，避免服务来回切换' : undefined}>
+                                        <span>
+                                            <Button
+                                                type="primary"
+                                                icon={<PlusOutlined />}
+                                                onClick={() => setShowNewAvatarModal(true)}
+                                                disabled={!readyForVideo || digitalHumanGenerating}
+                                                style={{
+                                                    borderRadius: 8,
+                                                    background: 'linear-gradient(135deg, #1677ff, #4096ff)',
+                                                    border: 'none',
+                                                    opacity: (!readyForVideo || digitalHumanGenerating) ? 0.6 : 1,
+                                                }}
+                                            >
+                                                创建新形象
+                                            </Button>
+                                        </span>
+                                    </Tooltip>
                                 </div>
 
                                 {avatars.length === 0 ? (
                                     <Empty
                                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                                         description={
-                                            <div>
-                                                <div style={{ marginBottom: 8 }}>还没有数字人形象</div>
-                                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                                    点击"创建新形象"上传一段说话视频，即可克隆你的数字分身
-                                                </Typography.Text>
-                                            </div>
+                                            !readyForVideo ? (
+                                                <div>
+                                                    <div style={{ marginBottom: 8 }}>先完成左侧步骤</div>
+                                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                                        确认逐字稿并准备好音频后，系统会自动切换到数字人服务并加载形象。
+                                                    </Typography.Text>
+                                                </div>
+                                            ) : !avatarsLoaded ? (
+                                                <div>
+                                                    <div style={{ marginBottom: 8 }}>正在加载数字人形象…</div>
+                                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                                        如长时间无响应，可点击右上角「设置」检查服务器，或稍后重试刷新。
+                                                    </Typography.Text>
+                                                </div>
+                                            ) : (
+                                                <div>
+                                                    <div style={{ marginBottom: 8 }}>还没有数字人形象</div>
+                                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                                        点击“创建新形象”上传一段说话视频，即可克隆你的数字分身
+                                                    </Typography.Text>
+                                                </div>
+                                            )
                                         }
                                     />
                                 ) : (

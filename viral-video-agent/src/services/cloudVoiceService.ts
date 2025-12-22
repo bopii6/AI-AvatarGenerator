@@ -10,11 +10,22 @@ function safeTrim(input: string | undefined | null): string {
     return (input || '').toString().trim()
 }
 
+function safeDecodeURIComponent(input: string): string {
+    try {
+        return decodeURIComponent(input)
+    } catch {
+        return input
+    }
+}
+
 export type CloudVoiceConfig = {
     serverUrl?: string // e.g. http://1.2.3.4
     port: number // e.g. 9090
     deviceId: string
     localDataPath: string
+    /** 可选：当语音服务返回容器内路径（如 /code/data/xxx.wav）且 9090 无法下载时，使用 GPU 文件服务兜底下载 */
+    fallbackDownloadServerUrl?: string // e.g. http://1.2.3.4
+    fallbackDownloadPort?: number // e.g. 8383
 }
 
 export type CloudVoiceModel = {
@@ -196,7 +207,15 @@ function resolveAudioUrl(cfg: CloudVoiceConfig, audioUrl: string): string {
     return trimmed
 }
 
-function getCloudGpuDownloadBase(): { baseUrl: string; videoPort: number } | null {
+function getCloudGpuDownloadBase(cfg?: CloudVoiceConfig): { baseUrl: string; videoPort: number } | null {
+    const fromCfgUrl = safeTrim(cfg?.fallbackDownloadServerUrl)
+    const fromCfgPort = cfg?.fallbackDownloadPort
+    if (fromCfgUrl) {
+        const base = fromCfgUrl.replace(/\/+$/, '').replace(/:\d+$/, '')
+        const videoPort = Number.isFinite(fromCfgPort as any) ? Number(fromCfgPort) : 8383
+        return { baseUrl: base, videoPort }
+    }
+
     const rawGpuUrl = safeTrim(process.env.CLOUD_GPU_SERVER_URL)
     const rawPort = safeTrim(process.env.CLOUD_GPU_VIDEO_PORT)
     const videoPort = rawPort && /^\d+$/.test(rawPort) ? parseInt(rawPort, 10) : 8383
@@ -225,8 +244,46 @@ function uniqueStrings(items: string[]): string[] {
     return out
 }
 
+function tryExtractPathParamFromDownloadUrl(maybeUrlOrPath: string): string | null {
+    const raw = safeTrim(maybeUrlOrPath)
+    if (!raw) return null
+
+    const extractFromUrl = (u: URL): string | null => {
+        const p =
+            u.searchParams.get('path')
+            || u.searchParams.get('file')
+            || u.searchParams.get('filepath')
+        if (!p) return null
+        return safeDecodeURIComponent(p)
+    }
+
+    // Absolute URL
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        try {
+            return extractFromUrl(new URL(raw))
+        } catch {
+            // ignore
+        }
+    }
+
+    // Relative URL like "/download?path=..."
+    if (raw.startsWith('/')) {
+        try {
+            return extractFromUrl(new URL(raw, 'http://placeholder.local'))
+        } catch {
+            // ignore
+        }
+    }
+
+    // Fallback: manual parse
+    const m = raw.match(/[?&]path=([^&#]+)/i) || raw.match(/[?&]file=([^&#]+)/i) || raw.match(/[?&]filepath=([^&#]+)/i)
+    if (m?.[1]) return safeDecodeURIComponent(m[1])
+    return null
+}
+
 function buildAudioPathCandidates(serverPath: string): string[] {
-    const raw = safeTrim(serverPath).replace(/\\/g, '/')
+    const extracted = tryExtractPathParamFromDownloadUrl(serverPath)
+    const raw = safeTrim(extracted || serverPath).replace(/\\/g, '/')
     const noQuery = raw.split('#')[0].split('?')[0]
     const candidates: string[] = []
 
@@ -309,14 +366,24 @@ export async function synthesizeWithVoice(cfg: CloudVoiceConfig, params: { voice
         // 兼容一些服务端返回“容器内路径”（如 /code/data/xxx.wav），该路径并不一定在 9090 端口提供静态下载；
         // 这里尝试复用 GPU 文件服务（8383 /download?path=...）进行下载。
         const raw = safeTrim(audioUrl)
-        const likelyServerPath = raw.startsWith('/') && (raw.includes('/code/') || raw.includes('/code/data') || raw.endsWith('.wav') || raw.endsWith('.mp3'))
-        const gpu = getCloudGpuDownloadBase()
+        const extractedPath = tryExtractPathParamFromDownloadUrl(raw)
+        const ref = safeTrim(extractedPath || raw)
+        const likelyServerPath = Boolean(extractedPath)
+            || ref.includes('/code/')
+            || ref.includes('/code/data')
+            || ref.includes('/temp/')
+            || ref.includes('/download')
+            || ref.endsWith('.wav')
+            || ref.endsWith('.mp3')
+        const gpu = getCloudGpuDownloadBase(cfg)
         const statusText = safeTrim(e?.message)
-        const is404 = statusText.includes('HTTP 404')
+        const httpMatch = statusText.match(/HTTP\\s+(\\d{3})/i)
+        const httpStatus = httpMatch?.[1] ? parseInt(httpMatch[1], 10) : null
+        const isHttpError = !!httpStatus && httpStatus >= 400
 
-        if (likelyServerPath && gpu && is404) {
+        if (likelyServerPath && gpu && isHttpError) {
             let lastErr: any = e
-            const candidates = buildAudioPathCandidates(raw)
+            const candidates = buildAudioPathCandidates(extractedPath || raw)
             for (const p of candidates) {
                 try {
                     await downloadFile(`${gpu.baseUrl}:${gpu.videoPort}/download?path=${encodeURIComponent(p)}`, outPath)
@@ -326,7 +393,9 @@ export async function synthesizeWithVoice(cfg: CloudVoiceConfig, params: { voice
                     continue
                 }
             }
-            throw lastErr
+            const base = `${gpu.baseUrl}:${gpu.videoPort}`
+            const lastMsg = safeTrim(lastErr?.message) || '未知错误'
+            throw new Error(`音频已生成，但下载失败：${lastMsg}（audioUrl=${raw}，downloadBase=${base}）`)
         }
 
         throw e
