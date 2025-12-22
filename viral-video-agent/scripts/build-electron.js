@@ -9,7 +9,9 @@ const envConfig = fs.existsSync(envPath) ? dotenv.parse(fs.readFileSync(envPath)
 
 // 定义要注入的变量
 const defines = {
-    'process.env.NODE_ENV': '"production"',
+    // In dev we need main process to load Vite (http://localhost:5173).
+    // In prod keep loading dist/index.html.
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'production'),
 }
 
 // 将 .env 中的关键变量注入（排除敏感或不必要的变量，但确保 ASR/TTS 所需的都进入）

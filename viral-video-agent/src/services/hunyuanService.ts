@@ -223,3 +223,38 @@ ${content}
     const result = await callHunyuanApi(config, messages)
     return result.split('\n').filter(line => line.trim()).slice(0, count)
 }
+
+/**
+ * 分析文案的爆款规律
+ */
+export async function analyzeCopyPattern(
+    config: HunyuanConfig,
+    copies: string
+): Promise<string> {
+    const prompt = `你是一位资深的短视频文案分析专家。请分析以下这一组爆款视频文案，总结它们的成功规律。
+你的目标是让普通用户一眼就能看懂这些视频为什么能火，并能直接模仿。
+
+文案内容：
+${copies}
+
+请严格按照以下格式输出你的分析结果，不要有任何开场白或结尾，确保每个部分都有实质性、可操作的建议：
+
+【核心钩子】
+(在这里深入分析头3秒的抓人技巧，使用 1. 2. 3. 列表形式)
+
+【爆款公式】
+(在这里总结文案的底层逻辑结构，例如：建立共鸣 -> 揭示痛点 -> 给出干货 -> 引导点赞)
+
+【情绪锚点】
+(在这里解释为什么用户会有情绪波动，触动了什么样的心理心理)
+
+【金句模板】
+(在这里提供 1-2 个具体的句式模板，使用 [填空] 的方式，让用户能直接复制使用)
+`
+
+    const messages = [
+        { Role: 'user', Content: prompt }
+    ]
+
+    return callHunyuanApi(config, messages)
+}

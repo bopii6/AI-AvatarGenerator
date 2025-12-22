@@ -1,18 +1,22 @@
-import { useEffect, useState } from 'react'
-import { Input, Button, message, Modal, Spin, Tabs, Card, Space, Typography } from 'antd'
+import { useEffect, useState, useCallback } from 'react'
+import { Input, Button, message, Modal, Spin, Tabs, Card, Space, Typography, Tooltip } from 'antd'
 import {
-    RocketOutlined,
     DownloadOutlined,
-    FileTextOutlined,
-    SoundOutlined,
     UserOutlined,
     SettingOutlined,
+    CopyOutlined,
+    RocketOutlined,
+    LockOutlined,
+    DownOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from './store/appStore'
 import CookieSettings from './components/CookieSettings'
 import VoiceCloneSettings from './components/VoiceCloneSettings'
 import ServerSettings from './components/ServerSettings'
 import ProfileVideoSelector from './components/ProfileVideoSelector'
+import { useGpuScheduler } from './contexts/GpuSchedulerContext'
+import ServiceSwitchingModal from './components/ServiceSwitchingModal'
+import { ServiceType } from './services/gpuSchedulerService'
 
 // 步骤面板组件
 import CopywritingPanel from './components/panels/CopywritingPanel'
@@ -26,74 +30,96 @@ import PublishPanel from './components/panels/PublishPanel'
 import PreviewPanel from './components/PreviewPanel'
 
 function App() {
-    const [oneClickReady, setOneClickReady] = useState(false)
     const [isTracking, setIsTracking] = useState(false)
-    const [serviceStatus] = useState<'ready' | 'busy' | 'warn'>('ready')
     const [settingsOpen, setSettingsOpen] = useState(false)
-    const [activeKey, setActiveKey] = useState<string>('material')
     const [parseMode, setParseMode] = useState<'single' | 'profile' | null>(null)
     const [profileModalOpen, setProfileModalOpen] = useState(false)
     const [profileLoading, setProfileLoading] = useState(false)
     const [profileVideos, setProfileVideos] = useState<any[]>([])
+    const [batchResults, setBatchResults] = useState<{ title: string; copy: string; status: 'loading' | 'success' }[]>([])
     // 预留：云端服务状态可接后端心跳，这里先写死为 ready
 
     const {
-        isRunning,
+        activeKey,
+        setActiveKey,
         douyinUrl,
         setDouyinUrl,
-        startPipeline,
-        stopPipeline,
         setVideoPath,
+        setBatchVideos,
         setPreview,
         setOriginalCopy,
-        setRewrittenCopy,
-        setInputAudioPath,
         setFinalVideoPath,
-        setCoverPath,
-        setTitles,
-        setHashtags,
+        setBatchCopies,
+        setBatchRewrittenCopies,
+        setDigitalHumanSelectedCopy,
         videoPath,
         inputAudioPath,
-        originalCopy,
         rewrittenCopy,
-        audioPath,
         digitalHumanVideoPath,
-        subtitlePath,
+        digitalHumanGenerating,
+        digitalHumanProgress,
+        digitalHumanProgressText,
         finalVideoPath,
         coverPath,
         titles,
     } = useAppStore()
 
     useEffect(() => {
-        let cancelled = false
-        const checkReady = async () => {
-            try {
-                const [avatarsRes, voicesRes] = await Promise.all([
-                    window.electronAPI?.invoke('cloud-gpu-get-avatars'),
-                    window.electronAPI?.invoke('cloud-voice-list-models'),
-                ])
-
-                const hasAvatars = !!(avatarsRes?.success && Array.isArray(avatarsRes.data) && avatarsRes.data.length > 0)
-                const hasVoiceModels = !!(voicesRes?.success && Array.isArray(voicesRes.data) && voicesRes.data.some((m: any) => m?.status === 'ready'))
-
-                if (!cancelled) setOneClickReady(hasAvatars && hasVoiceModels)
-            } catch {
-                if (!cancelled) setOneClickReady(false)
-            }
-        }
-
-        checkReady()
-
-        // 轮询：避免用户在当前页创建分身后，按钮状态不刷新
-        const timer = setInterval(() => {
-            if (!cancelled) checkReady()
-        }, 3000)
+        const removeListener = window.electronAPI?.on('cloud-gpu-progress', (data: any) => {
+            const progress = data?.progress ?? 0
+            const text = data?.message ?? ''
+            useAppStore.getState().setDigitalHumanProgress(progress, text)
+        })
 
         return () => {
-            cancelled = true
-            clearInterval(timer)
+            if (removeListener) removeListener()
         }
     }, [])
+
+    // GPU 服务预热
+    const { preswitch, isRunning, status } = useGpuScheduler()
+
+    const requestService = useCallback((service: ServiceType) => {
+        if (!service) return
+        if (digitalHumanGenerating) {
+            if (!isRunning(service)) {
+                message.info('正在生成数字人视频，为避免云端服务切换导致失败，已暂停自动切换；请等待生成完成后再切换步骤')
+            }
+            return
+        }
+        if (!status?.online) {
+            message.warning('调度器未连接，请先检查服务器设置')
+            return
+        }
+        if (status.unstable) {
+            message.warning('调度器连接不稳定，正在重试，请稍候...')
+            return
+        }
+
+        if (status.switching) {
+            if (status.switchingTarget === service) {
+                return
+            }
+            message.info('调度器正在切换其它服务，请稍候...')
+            return
+        }
+
+        if (isRunning(service)) return
+        preswitch(service)
+    }, [digitalHumanGenerating, status, isRunning, preswitch])
+
+    // Tab 切换时的预热逻辑
+    const handleTabChange = useCallback((key: string) => {
+        if (key === activeKey) return
+
+        setActiveKey(key)
+
+        if (key === 'digitalHuman') {
+            requestService('duix')
+        } else if (key === 'audio') {
+            requestService('cosyvoice')
+        }
+    }, [activeKey, requestService])
 
     const handleDownloadSingle = async (overrideUrl?: string) => {
         const targetUrl = overrideUrl || douyinUrl
@@ -107,6 +133,9 @@ function App() {
         try {
             const result = await window.electronAPI?.invoke('download-video', targetUrl)
             if (result?.success && result.data?.videoPath) {
+                setBatchVideos([])
+                setBatchRewrittenCopies([])
+                setDigitalHumanSelectedCopy(null)
                 setVideoPath(result.data.videoPath)
                 setFinalVideoPath(result.data.videoPath)
                 setPreview('video', result.data.videoPath)
@@ -153,56 +182,57 @@ function App() {
 
     const handleBatchVideoSelect = async (videos: any[]) => {
         setProfileModalOpen(false)
-
         if (videos.length === 0) return
 
-        // 批量下载并提取文案
-        setIsTracking(true)
+        setBatchVideos([])
+        setBatchRewrittenCopies([])
+        setDigitalHumanSelectedCopy(null)
 
-        // 初始化预览区
-        setPreview('text', `🔍 正在批量解析 ${videos.length} 个视频...\n\n请耐心等待，每个视频间隔约 5-8 秒以确保安全`)
+        // 1. 初始化批量结果状态
+        setBatchResults(videos.map(v => ({
+            title: v.title || '视频',
+            copy: '',
+            status: 'loading'
+        })))
+
+        // 2. 更新预览区（仍然保留预览区的进度提示，作为双重反馈）
+        setPreview('text', `🔍 [v3.1] 正在批量解析 ${videos.length} 个视频...\n\n请关注下方「批量解析结果」区域`)
+
+        setIsTracking(true)
 
         try {
             const allCopies: { title: string; copy: string }[] = []
+            const allVideos: { title: string; videoPath: string }[] = []
 
             for (let i = 0; i < videos.length; i++) {
                 const video = videos[i]
                 const videoTitle = video.title || `视频 ${i + 1}`
 
-                // 更新预览区显示当前进度
-                const progressText = `🔍 正在解析第 ${i + 1}/${videos.length} 个视频...\n\n📹 ${videoTitle}\n\n` +
-                    (allCopies.length > 0 ?
-                        `---\n\n✅ 已完成:\n${allCopies.map((c, idx) => `\n【视频 ${idx + 1}】${c.title}\n${c.copy.substring(0, 100)}...`).join('\n')}`
-                        : '')
-                setPreview('text', progressText)
-
                 // 下载单个视频
                 const result = await window.electronAPI?.invoke('download-video', video.url)
                 if (result?.success && result.data?.videoPath) {
-                    // 设置视频路径到状态
-                    if (i === 0) {
-                        setVideoPath(result.data.videoPath)
-                    }
+                    if (i === 0) setVideoPath(result.data.videoPath)
+                    allVideos.push({ title: videoTitle, videoPath: result.data.videoPath })
+                    setBatchVideos([...allVideos])
 
                     // 提取文案
                     const asrResult = await window.electronAPI?.invoke('transcribe-audio', result.data.videoPath)
                     if (asrResult?.success && asrResult.data) {
-                        allCopies.push({ title: videoTitle, copy: asrResult.data })
+                        const copy = asrResult.data
+                        allCopies.push({ title: videoTitle, copy })
 
-                        // 渐进式更新预览区 - 每解析完一个就展示
-                        const completedText = `✅ 已解析 ${allCopies.length}/${videos.length} 个视频\n\n` +
-                            allCopies.map((c, idx) =>
-                                `━━━━━━━━━━━━━━━━━━━━━━\n📹 【视频 ${idx + 1}】\n${c.title}\n━━━━━━━━━━━━━━━━━━━━━━\n\n${c.copy}`
-                            ).join('\n\n') +
-                            (i < videos.length - 1 ? `\n\n⏳ 正在解析下一个...` : '')
-                        setPreview('text', completedText)
+                        // 3. 更新单个结果状态
+                        setBatchResults(prev => {
+                            const newResults = [...prev]
+                            newResults[i] = { ...newResults[i], copy, status: 'success' }
+                            return newResults
+                        })
                     }
                 }
 
-                // 随机延迟 5-8 秒避免反爬（更安全）
+                // 随机延迟 5-8 秒
                 if (i < videos.length - 1) {
-                    const delay = 5000 + Math.random() * 3000 // 5-8秒随机
-                    await new Promise(resolve => setTimeout(resolve, delay))
+                    await new Promise(resolve => setTimeout(resolve, 5000 + Math.random() * 3000))
                 }
             }
 
@@ -210,140 +240,45 @@ function App() {
                 // 保存所有文案到状态
                 const combinedCopy = allCopies.map((c, i) => `【视频${i + 1}】${c.title}\n${c.copy}`).join('\n\n---\n\n')
                 setOriginalCopy(combinedCopy)
-
-                // 最终展示 - 不自动跳转，让用户确认
-                const finalText = `🎉 批量解析完成！共提取 ${allCopies.length} 个视频的文案\n\n` +
-                    allCopies.map((c, idx) =>
-                        `━━━━━━━━━━━━━━━━━━━━━━\n📹 【视频 ${idx + 1}】\n${c.title}\n━━━━━━━━━━━━━━━━━━━━━━\n\n${c.copy}`
-                    ).join('\n\n') +
-                    `\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n✅ 解析完成！请查看以上文案\n👉 确认无误后，点击左侧【变原创】进入下一步`
-                setPreview('text', finalText)
-                message.success(`批量解析完成！共提取 ${allCopies.length} 个视频的文案`)
-
-                // 不自动跳转，让用户自己决定
-                // setActiveKey('rewrite') -- 移除自动跳转
+                setBatchCopies(allCopies) // 保存到全局状态
+                setBatchVideos(allVideos)
+                setPreview('text', `✅ 解析完成！\n\n请查看下方列表，每条文案都可单独复制。\n点击下方「下一步：变原创」继续。`)
+                message.success(`批量解析完成！`)
             } else {
                 message.warning('未能提取到任何文案')
-                setPreview('text', '❌ 未能提取到任何文案，请检查视频链接是否有效')
             }
         } catch (e: any) {
             message.error(`批量解析失败: ${e.message}`)
-            setPreview('text', `❌ 批量解析失败: ${e.message}`)
         } finally {
             setIsTracking(false)
         }
     }
 
-    const handleOneClickRun = async () => {
-        if (!douyinUrl) {
-            message.warning('请输入抖音分享链接')
-            return
-        }
-        if (!oneClickReady) {
-            message.warning('请先完成「口播数字人分身」与「声音克隆」配置，再开启全自动一键追爆')
-            setActiveKey('digitalHuman')
-            return
-        }
 
-        startPipeline(douyinUrl)
-
-        try {
-            const result = await window.electronAPI?.invoke('run-pipeline', { douyinUrl })
-
-            if (result?.success) {
-                const data = result.data
-                // 更新所有状态
-                setOriginalCopy(data.originalCopy)
-                setRewrittenCopy(data.rewrittenCopy)
-                setFinalVideoPath(data.videoPath)
-                setCoverPath(data.coverPath)
-                setTitles(data.titles)
-                setHashtags(data.hashtags)
-
-                message.success('全自动流程完成！')
-                setActiveKey('publish')
-            } else {
-                throw new Error(result?.error || '未知错误')
-            }
-        } catch (e: any) {
-            message.error('流程失败: ' + e.message)
-        } finally {
-            stopPipeline()
-        }
-    }
-
-    const renderStatusText = () => {
-        switch (serviceStatus) {
-            case 'busy': return '云引擎 · 调度中'
-            case 'warn': return '云引擎 · 请稍后'
-            default: return '云引擎 · 就绪'
-        }
-    }
-
-    const handleImportVideo = async () => {
-        try {
-            const result = await window.electronAPI?.invoke('select-video-file')
-            if (result?.success && result.filePath) {
-                setVideoPath(result.filePath)
-                setFinalVideoPath(result.filePath)
-                setPreview('video', result.filePath)
-                message.success('已导入本地视频')
-                setActiveKey('copywriting')
-            } else if (!result?.canceled) {
-                throw new Error(result?.error || '未选择视频')
-            }
-        } catch (e: any) {
-            message.error(e.message || '导入视频失败')
-        }
-    }
-
-    const handleImportAudio = async () => {
-        try {
-            const result = await window.electronAPI?.invoke('select-audio-file')
-            if (result?.success && result.filePath) {
-                setInputAudioPath(result.filePath)
-                setPreview('audio', result.filePath)
-                message.success('已导入本地音频')
-                setActiveKey('copywriting')
-            } else if (!result?.canceled) {
-                throw new Error(result?.error || '未选择音频')
-            }
-        } catch (e: any) {
-            message.error(e.message || '导入音频失败')
-        }
-    }
-
-    const handleImportCopy = async () => {
-        try {
-            const result = await window.electronAPI?.invoke('select-text-file')
-            if (result?.success && result.data?.content) {
-                setOriginalCopy(result.data.content)
-                setPreview('text', result.data.content)
-                message.success('已导入文案')
-                setActiveKey('rewrite')
-            } else if (!result?.canceled) {
-                throw new Error(result?.error || '未选择文案文件')
-            }
-        } catch (e: any) {
-            message.error(e.message || '导入文案失败')
-        }
-    }
 
     const progressItems = [
         { key: 'material', title: '🔍 找对标', subtitle: '找到爆款视频', done: !!(videoPath || finalVideoPath || inputAudioPath) },
         { key: 'rewrite', title: '✨ 变原创', subtitle: 'AI改写成你的', done: !!rewrittenCopy },
-        { key: 'digitalHuman', title: '🎭 做数字人', subtitle: '生成AI分身', done: !!digitalHumanVideoPath },
+        { key: 'digitalHuman', title: '🎭 数字人', subtitle: '生成AI分身', done: !!digitalHumanVideoPath },
         { key: 'publish', title: '🚀 一键发', subtitle: '全网自动分发', done: !!(coverPath && titles?.length) },
     ]
 
-    const activeIndex = Math.max(0, progressItems.findIndex((i) => i.key === activeKey))
+    // audio 面板属于「数字人」步骤的子流程：侧栏仍高亮在数字人，避免用户误以为跳回“找对标”
+    const sidebarKey = activeKey === 'audio' ? 'digitalHuman' : activeKey
 
-    const currentItemTitle = progressItems.find((i) => i.key === activeKey)?.title || '步骤'
+    const activeIndex = Math.max(0, progressItems.findIndex((i) => i.key === sidebarKey))
+    const maxUnlockedIndex = (() => {
+        let idx = 0
+        for (let i = 1; i < progressItems.length; i += 1) {
+            if (progressItems[i - 1].done) idx = i
+            else break
+        }
+        return idx
+    })()
 
-    const orderedKeys = progressItems.map((i) => i.key)
-    const nextKey = activeIndex >= 0 && activeIndex < orderedKeys.length - 1 ? orderedKeys[activeIndex + 1] : null
-    const prevKey = activeIndex > 0 ? orderedKeys[activeIndex - 1] : null
-    const canGoNext = progressItems[activeIndex]?.done ?? false
+    const currentItemTitle = progressItems.find((i) => i.key === sidebarKey)?.title || '步骤'
+    const showPreviewPanel = sidebarKey !== 'digitalHuman'
+
 
     const renderActivePanel = () => {
         switch (activeKey) {
@@ -452,31 +387,84 @@ function App() {
                             </>
                         )}
 
-                        {/* 或者导入本地文件 */}
-                        <div>
-                            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-                                或者导入本地素材：
-                            </Typography.Text>
-                            <Space wrap>
-                                <Button icon={<DownloadOutlined />} onClick={handleImportVideo}>
-                                    导入本地视频
-                                </Button>
-                                <Button icon={<SoundOutlined />} onClick={handleImportAudio}>
-                                    导入本地音频
-                                </Button>
-                                <Button icon={<FileTextOutlined />} onClick={handleImportCopy}>
-                                    导入文案（txt/md）
-                                </Button>
-                            </Space>
-                        </div>
-
-                        <Card size="small" title="当前素材状态">
-                            <Space direction="vertical" style={{ width: '100%' }} size={6}>
-                                <Typography.Text type="secondary">视频：{finalVideoPath || videoPath || '未选择'}</Typography.Text>
-                                <Typography.Text type="secondary">音频：{inputAudioPath || '未选择'}</Typography.Text>
-                                <Typography.Text type="secondary">文案：{originalCopy ? `已导入/提取（${originalCopy.length}字）` : '未导入'}</Typography.Text>
-                            </Space>
-                        </Card>
+                        {/* 批量解析结果展示区 */}
+                        {batchResults.length > 0 && (
+                            <div style={{ marginTop: 24 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                                    <Typography.Title level={4} style={{ margin: 0, color: 'var(--accent)' }}>
+                                        批量解析结果 ({batchResults.filter(r => r.status === 'success').length}/{batchResults.length})
+                                    </Typography.Title>
+                                    <Button
+                                        type="primary"
+                                        onClick={() => setActiveKey('rewrite')}
+                                        disabled={batchResults.every(r => r.status === 'loading')}
+                                    >
+                                        下一步：变原创 →
+                                    </Button>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                    {batchResults.map((result, index) => (
+                                        <Card
+                                            key={index}
+                                            style={{
+                                                background: 'var(--bg-secondary)',
+                                                borderColor: result.status === 'success' ? 'var(--primary-color)' : 'var(--border)'
+                                            }}
+                                            bodyStyle={{ padding: 16 }}
+                                        >
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                    <span style={{
+                                                        background: 'var(--primary-color)',
+                                                        color: '#000',
+                                                        borderRadius: '50%',
+                                                        width: 24,
+                                                        height: 24,
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        justifyContent: 'center',
+                                                        fontWeight: 'bold'
+                                                    }}>{index + 1}</span>
+                                                    <Typography.Text strong style={{ fontSize: 16 }}>{result.title}</Typography.Text>
+                                                </div>
+                                                {result.status === 'success' ? (
+                                                    <Button
+                                                        size="small"
+                                                        icon={<CopyOutlined />}
+                                                        onClick={() => {
+                                                            navigator.clipboard.writeText(result.copy)
+                                                            message.success('已复制文案')
+                                                        }}
+                                                    >
+                                                        复制文案
+                                                    </Button>
+                                                ) : (
+                                                    <Spin size="small" />
+                                                )}
+                                            </div>
+                                            {result.status === 'success' ? (
+                                                <div style={{
+                                                    background: '#000',
+                                                    padding: 12,
+                                                    borderRadius: 8,
+                                                    maxHeight: 150,
+                                                    overflowY: 'auto',
+                                                    fontSize: 14,
+                                                    color: 'rgba(255,255,255,0.85)',
+                                                    lineHeight: 1.6
+                                                }}>
+                                                    {result.copy}
+                                                </div>
+                                            ) : (
+                                                <div style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                                    正在解析视频并提取文案...
+                                                </div>
+                                            )}
+                                        </Card>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </Space>
                 )
             case 'copywriting':
@@ -502,16 +490,39 @@ function App() {
 
     return (
         <>
+            {/* 全局服务切换进度弹窗 */}
+            <ServiceSwitchingModal />
+
             {/* 顶部工具栏 - 简化版 */}
             <header className="header" style={{ justifyContent: 'center', position: 'relative' }}>
                 <div className="header-title" style={{ flex: 'none', justifyContent: 'center' }}>
                     <div className="brand-pill" style={{ fontSize: 16, padding: '8px 16px' }}>AI</div>
                     <div style={{ textAlign: 'center' }}>
-                        <div className="brand-name" style={{ fontSize: 28, fontWeight: 800 }}>360行 AI智能体大脑</div>
+                        <div className="brand-name" style={{ fontSize: 28, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                            360行 AI智能体大脑
+                            <span
+                                title={`build: ${__BUILD_TIME__}`}
+                                style={{ fontSize: 10, backgroundColor: 'rgba(0, 212, 170, 0.1)', color: '#00d4aa', padding: '2px 8px', borderRadius: 4, border: '1px solid rgba(0, 212, 170, 0.3)', verticalAlign: 'middle', fontWeight: 400 }}
+                            >
+                                v{__APP_VERSION__}
+                            </span>
+                        </div>
                         <div className="brand-subtitle" style={{ fontSize: 14 }}>一键生成 · 全网分发 · 躺赚流量</div>
                     </div>
                 </div>
                 <div className="header-actions" style={{ position: 'absolute', right: 28, top: '50%', transform: 'translateY(-50%)' }}>
+                    {digitalHumanGenerating && (
+                        <Tooltip title={digitalHumanProgressText || '正在生成数字人视频...'}>
+                            <Button
+                                size="large"
+                                icon={<RocketOutlined />}
+                                onClick={() => setActiveKey('digitalHuman')}
+                                style={{ marginRight: 12 }}
+                            >
+                                出片中 {Math.round(digitalHumanProgress)}%
+                            </Button>
+                        </Tooltip>
+                    )}
                     <Button
                         size="large"
                         icon={<SettingOutlined />}
@@ -532,49 +543,114 @@ function App() {
                         </Typography.Text>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                        {progressItems.map((item, idx) => (
-                            <div
-                                key={item.key}
-                                onClick={() => setActiveKey(item.key)}
-                                style={{
-                                    padding: '16px 20px',
-                                    borderRadius: 12,
-                                    cursor: 'pointer',
-                                    background: activeIndex === idx
-                                        ? 'linear-gradient(135deg, rgba(0, 212, 170, 0.2), rgba(0, 184, 148, 0.1))'
-                                        : 'rgba(255, 255, 255, 0.03)',
-                                    border: activeIndex === idx
-                                        ? '2px solid var(--primary-color)'
-                                        : '1px solid rgba(255, 255, 255, 0.08)',
-                                    transition: 'all 0.2s ease',
-                                    opacity: item.done ? 1 : (activeIndex === idx ? 1 : 0.6),
-                                }}
-                            >
-                                <div style={{
-                                    fontSize: 22,
-                                    fontWeight: 700,
-                                    color: activeIndex === idx ? 'var(--primary-color)' : 'var(--text-primary)',
-                                    marginBottom: 4
-                                }}>
-                                    {item.title}
-                                </div>
-                                <div style={{
-                                    fontSize: 13,
-                                    color: 'var(--text-secondary)',
-                                }}>
-                                    {(item as any).subtitle || ''}
-                                </div>
-                                {item.done && (
-                                    <div style={{
-                                        fontSize: 12,
-                                        color: '#52c41a',
-                                        marginTop: 6
-                                    }}>
-                                        ✓ 已完成
+                        {progressItems.map((item, idx) => {
+                            const locked = idx > maxUnlockedIndex && idx !== activeIndex
+                            const connectorColor = item.done
+                                ? 'rgba(82,196,26,0.75)'
+                                : (activeIndex === idx ? 'rgba(0, 212, 170, 0.85)' : 'rgba(255,255,255,0.18)')
+                            const connectorDim = locked ? 'rgba(255,255,255,0.10)' : connectorColor
+
+                            return (
+                                <div key={item.key}>
+                                    <div
+                                        onClick={() => {
+                                            if (locked) {
+                                                const prev = progressItems[idx - 1]
+                                                message.warning(`请先完成上一步：${prev?.title || ''}`.trim())
+                                                return
+                                            }
+                                            handleTabChange(item.key)
+                                        }}
+                                        style={{
+                                            padding: '16px 20px',
+                                            borderRadius: 12,
+                                            cursor: locked ? 'not-allowed' : 'pointer',
+                                            background: activeIndex === idx
+                                                ? 'linear-gradient(135deg, rgba(0, 212, 170, 0.2), rgba(0, 184, 148, 0.1))'
+                                                : 'rgba(255, 255, 255, 0.03)',
+                                            border: activeIndex === idx
+                                                ? '2px solid var(--primary-color)'
+                                                : '1px solid rgba(255, 255, 255, 0.08)',
+                                            transition: 'all 0.2s ease',
+                                            opacity: locked ? 0.45 : (item.done ? 1 : (activeIndex === idx ? 1 : 0.72)),
+                                        }}
+                                    >
+                                        <div style={{
+                                            fontSize: 22,
+                                            fontWeight: 700,
+                                            color: activeIndex === idx ? 'var(--primary-color)' : 'var(--text-primary)',
+                                            marginBottom: 4
+                                        }}>
+                                            <span style={{
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                width: 26,
+                                                height: 26,
+                                                borderRadius: 999,
+                                                fontSize: 13,
+                                                fontWeight: 800,
+                                                marginRight: 10,
+                                                background: item.done
+                                                    ? 'rgba(82,196,26,0.15)'
+                                                    : activeIndex === idx
+                                                        ? 'rgba(0, 212, 170, 0.18)'
+                                                        : 'rgba(255,255,255,0.06)',
+                                                border: `1px solid ${item.done
+                                                    ? 'rgba(82,196,26,0.28)'
+                                                    : activeIndex === idx
+                                                        ? 'rgba(0, 212, 170, 0.28)'
+                                                        : 'rgba(255,255,255,0.10)'}`,
+                                                color: item.done ? '#52c41a' : activeIndex === idx ? 'var(--primary-color)' : 'rgba(255,255,255,0.65)',
+                                            }}>
+                                                {idx + 1}
+                                            </span>
+                                            {item.title}
+                                        </div>
+                                        <div style={{
+                                            fontSize: 13,
+                                            color: 'var(--text-secondary)',
+                                        }}>
+                                            {(item as any).subtitle || ''}
+                                        </div>
+                                        {locked ? (
+                                            <div style={{
+                                                fontSize: 12,
+                                                color: 'rgba(255,255,255,0.55)',
+                                                marginTop: 6,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 6,
+                                            }}>
+                                                <LockOutlined />
+                                                请先完成上一步
+                                            </div>
+                                        ) : item.done ? (
+                                            <div style={{
+                                                fontSize: 12,
+                                                color: '#52c41a',
+                                                marginTop: 6
+                                            }}>
+                                                ✓ 已完成
+                                            </div>
+                                        ) : null}
                                     </div>
-                                )}
-                            </div>
-                        ))}
+
+                                    {idx < progressItems.length - 1 && (
+                                        <div style={{
+                                            height: 18,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            color: connectorDim,
+                                            userSelect: 'none',
+                                        }}>
+                                            <DownOutlined />
+                                        </div>
+                                    )}
+                                </div>
+                            )
+                        })}
                     </div>
                 </aside>
 
@@ -610,9 +686,11 @@ function App() {
                 </section>
 
                 {/* 右侧预览区 */}
-                <aside className="preview-panel">
-                    <PreviewPanel />
-                </aside>
+                {showPreviewPanel && (
+                    <aside className="preview-panel">
+                        <PreviewPanel />
+                    </aside>
+                )}
             </main>
 
             <Modal

@@ -4,8 +4,8 @@ import { useState } from 'react'
 import { useAppStore } from '../../store/appStore'
 
 interface SubtitleSegment {
-    startTime: number
-    endTime: number
+    start: number
+    end: number
     text: string
 }
 
@@ -24,17 +24,10 @@ function SubtitlePanel() {
         finalVideoPath,
         sourceVideoPath,
         digitalHumanVideoPath,
-        originalCopy,
-        rewrittenCopy,
         setSubtitlePath,
         setFinalVideoPath,
         setPreview,
     } = useAppStore()
-
-    const resolveSubtitleText = () => {
-        const userText = subtitleText.trim()
-        return userText || rewrittenCopy || originalCopy || '这是自动生成的字幕内容'
-    }
 
     const createSubtitleFile = async (segments: SubtitleSegment[]) => {
         if (!window.electronAPI?.generateSubtitleFile) {
@@ -83,15 +76,15 @@ function SubtitlePanel() {
             const proportion = line.length / totalLength || 1 / rawSegments.length
             let segmentDuration = targetDuration * proportion
             segmentDuration = Math.max(segmentDuration, minSegmentDuration)
-            const startTime = cursor
-            const endTime = index === rawSegments.length - 1 ? targetDuration : Math.min(targetDuration, cursor + segmentDuration)
-            segments.push({ startTime, endTime, text: line })
-            cursor = endTime
+            const start = cursor
+            const end = index === rawSegments.length - 1 ? targetDuration : Math.min(targetDuration, cursor + segmentDuration)
+            segments.push({ start, end, text: line })
+            cursor = end
         })
 
         // ensure last segment ends at targetDuration
         if (segments.length > 0) {
-            segments[segments.length - 1].endTime = targetDuration
+            segments[segments.length - 1].end = targetDuration
         }
 
         return segments

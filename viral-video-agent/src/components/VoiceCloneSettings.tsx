@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Divider, Input, List, message, Progress, Space, Tag, Typography, Upload } from 'antd'
-import { ReloadOutlined, UploadOutlined } from '@ant-design/icons'
+import { useEffect, useRef, useState } from 'react'
+import { Alert, Button, Card, Divider, Input, List, message, Progress, Space, Tag, Typography } from 'antd'
+import { ReloadOutlined } from '@ant-design/icons'
+import { isServiceSwitchingError, startServiceSwitchingHint } from '../utils/serviceSwitchingHint'
+import GpuServiceStatus from './GpuServiceStatus'
+import { useGpuScheduler } from '../contexts/GpuSchedulerContext'
+import { useAppStore } from '../store/appStore'
 
 type CloudVoiceModel = {
     id: string
@@ -11,53 +15,73 @@ type CloudVoiceModel = {
     error?: string
 }
 
-function fileToBase64Raw(file: File): Promise<string> {
+function blobToBase64Raw(blob: Blob): Promise<string> {
     return new Promise((resolve, reject) => {
         const reader = new FileReader()
         reader.onload = () => {
             const result = reader.result
             if (typeof result !== 'string') {
-                reject(new Error('读取文件失败'))
+                reject(new Error('读取音频失败'))
                 return
             }
             const comma = result.indexOf(',')
             resolve(comma >= 0 ? result.slice(comma + 1) : result)
         }
-        reader.onerror = () => reject(reader.error || new Error('读取文件失败'))
-        reader.readAsDataURL(file)
+        reader.onerror = () => reject(reader.error || new Error('读取音频失败'))
+        reader.readAsDataURL(blob)
     })
 }
 
+function pickRecorderMimeType(): string | undefined {
+    if (typeof MediaRecorder === 'undefined') return undefined
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg']
+    for (const t of candidates) {
+        if (MediaRecorder.isTypeSupported(t)) return t
+    }
+    return undefined
+}
+
+function extFromMime(mimeType: string | undefined): string {
+    const mt = (mimeType || '').toLowerCase()
+    if (mt.includes('ogg')) return 'ogg'
+    if (mt.includes('wav')) return 'wav'
+    if (mt.includes('mpeg') || mt.includes('mp3')) return 'mp3'
+    return 'webm'
+}
+
 export default function VoiceCloneSettings() {
-    const [online, setOnline] = useState<boolean | null>(null)
-    const [onlineMsg, setOnlineMsg] = useState<string>('')
+    const digitalHumanGenerating = useAppStore((s) => s.digitalHumanGenerating)
     const [models, setModels] = useState<CloudVoiceModel[]>([])
     const [trainingName, setTrainingName] = useState('')
-    const [trainingFile, setTrainingFile] = useState<File | null>(null)
+    const [recording, setRecording] = useState(false)
+    const [recordSeconds, setRecordSeconds] = useState(0)
+    const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null)
+    const [recordedUrl, setRecordedUrl] = useState<string>('')
     const [training, setTraining] = useState(false)
     const [trainingVoiceId, setTrainingVoiceId] = useState<string>('')
     const [progress, setProgress] = useState<number>(0)
     const [progressText, setProgressText] = useState<string>('')
 
-    const readyCount = useMemo(() => models.filter(m => m.status === 'ready').length, [models])
+    const recorderRef = useRef<MediaRecorder | null>(null)
+    const streamRef = useRef<MediaStream | null>(null)
+    const chunksRef = useRef<BlobPart[]>([])
+    const timerRef = useRef<number | null>(null)
+    const recordedUrlRef = useRef<string>('')
+    const pendingRefreshModelsRef = useRef(false)
 
-    const refreshStatus = async () => {
-        try {
-            const res = await window.electronAPI?.invoke('cloud-voice-check-status')
-            if (res?.success && res.data) {
-                setOnline(!!res.data.online)
-                setOnlineMsg(res.data.message || '')
-            } else {
-                setOnline(false)
-                setOnlineMsg(res?.error || '')
-            }
-        } catch {
-            setOnline(false)
-            setOnlineMsg('')
-        }
-    }
+    const { status: schedulerStatus, isRunning: isServiceRunning, preswitch } = useGpuScheduler()
+    const schedulerOnline = !!schedulerStatus?.online
+    const cosyvoiceReady = schedulerOnline
+        && !schedulerStatus?.switching
+        && isServiceRunning('cosyvoice')
+        && !!schedulerStatus?.servicesHealth?.cosyvoice
 
     const refreshModels = async () => {
+        if (digitalHumanGenerating) return
+        if (!cosyvoiceReady) {
+            setModels([])
+            return
+        }
         try {
             const res = await window.electronAPI?.invoke('cloud-voice-list-models')
             if (res?.success && Array.isArray(res.data)) {
@@ -71,13 +95,125 @@ export default function VoiceCloneSettings() {
     }
 
     useEffect(() => {
-        refreshStatus()
+        if (!cosyvoiceReady) return
         refreshModels()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [cosyvoiceReady])
+
+    useEffect(() => {
+        if (!pendingRefreshModelsRef.current) return
+        if (!cosyvoiceReady) return
+        pendingRefreshModelsRef.current = false
+        refreshModels()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [cosyvoiceReady])
+
+    const connectCosyvoice = async () => {
+        if (digitalHumanGenerating) {
+            message.warning('正在生成数字人视频，为避免云端切换导致失败，请等待完成后再切换服务')
+            return
+        }
+        if (!schedulerOnline) {
+            message.warning('调度器未连接，请先到「服务器设置」检查地址/网络')
+            return
+        }
+        pendingRefreshModelsRef.current = true
+        const res = await preswitch('cosyvoice')
+        if (res && res.success === false) {
+            pendingRefreshModelsRef.current = false
+            message.warning(res.message || '切换声音克隆服务失败')
+            return
+        }
+        message.info('正在切换到声音克隆服务，请稍候...')
+    }
+
+    useEffect(() => {
+        return () => {
+            if (timerRef.current) window.clearInterval(timerRef.current)
+            timerRef.current = null
+            try {
+                recorderRef.current?.stop()
+            } catch {
+                // ignore
+            }
+            recorderRef.current = null
+            streamRef.current?.getTracks()?.forEach(t => t.stop())
+            streamRef.current = null
+            if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current)
+            recordedUrlRef.current = ''
+        }
     }, [])
 
-    const handleUpload = (file: File) => {
-        setTrainingFile(file)
-        return false
+    const resetRecording = () => {
+        setRecording(false)
+        setRecordSeconds(0)
+        setRecordedBlob(null)
+        if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current)
+        recordedUrlRef.current = ''
+        setRecordedUrl('')
+    }
+
+    const startRecording = async () => {
+        try {
+            if (recording) return
+            if (!navigator.mediaDevices?.getUserMedia) {
+                message.error('当前环境不支持麦克风录音')
+                return
+            }
+
+            resetRecording()
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+            streamRef.current = stream
+            chunksRef.current = []
+
+            const mimeType = pickRecorderMimeType()
+            const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+            recorderRef.current = recorder
+
+            recorder.ondataavailable = (ev) => {
+                if (ev.data && ev.data.size > 0) chunksRef.current.push(ev.data)
+            }
+
+            recorder.onstop = () => {
+                const blobType = recorder.mimeType || mimeType || 'audio/webm'
+                const blob = new Blob(chunksRef.current, { type: blobType })
+                setRecordedBlob(blob)
+                const url = URL.createObjectURL(blob)
+                if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current)
+                recordedUrlRef.current = url
+                setRecordedUrl(url)
+
+                streamRef.current?.getTracks()?.forEach(t => t.stop())
+                streamRef.current = null
+                recorderRef.current = null
+                chunksRef.current = []
+            }
+
+            recorder.start()
+            setRecording(true)
+            setRecordSeconds(0)
+            if (timerRef.current) window.clearInterval(timerRef.current)
+            timerRef.current = window.setInterval(() => setRecordSeconds(s => s + 1), 1000)
+        } catch (e: any) {
+            message.error(e?.message || '启动录音失败')
+            streamRef.current?.getTracks()?.forEach(t => t.stop())
+            streamRef.current = null
+            recorderRef.current = null
+            chunksRef.current = []
+        }
+    }
+
+    const stopRecording = () => {
+        if (!recording) return
+        try {
+            recorderRef.current?.stop()
+        } catch {
+            // ignore
+        } finally {
+            setRecording(false)
+            if (timerRef.current) window.clearInterval(timerRef.current)
+            timerRef.current = null
+        }
     }
 
     const pollTraining = async (voiceId: string) => {
@@ -108,13 +244,17 @@ export default function VoiceCloneSettings() {
     }
 
     const handleTrain = async () => {
-        if (!trainingFile) {
-            message.warning('请先上传一段声音样本')
+        if (digitalHumanGenerating) {
+            message.warning('正在生成数字人视频，为避免云端切换导致失败，请等待完成后再训练音色')
+            return
+        }
+        if (!recordedBlob) {
+            message.warning('请先录一段声音样本')
             return
         }
         const name = trainingName.trim()
         if (!name) {
-            message.warning('请填写声音名称')
+            message.warning('请填写音色名称')
             return
         }
 
@@ -122,13 +262,15 @@ export default function VoiceCloneSettings() {
         setTrainingVoiceId('')
         setProgress(0)
         setProgressText('准备上传...')
+        const stopHint = startServiceSwitchingHint('提交训练')
 
         try {
-            const audioBufferBase64 = await fileToBase64Raw(trainingFile)
+            const audioBufferBase64 = await blobToBase64Raw(recordedBlob)
+            const ext = extFromMime(recordedBlob.type)
             const res = await window.electronAPI?.invoke('cloud-voice-train', {
                 name,
                 audioBufferBase64,
-                fileName: trainingFile.name,
+                fileName: `record_${Date.now()}.${ext}`,
             })
             if (!res?.success) throw new Error(res?.error || '提交训练失败')
             const voiceId = res.data?.voiceId
@@ -138,59 +280,97 @@ export default function VoiceCloneSettings() {
             await pollTraining(voiceId)
             message.success('声音克隆训练完成')
             setTrainingName('')
-            setTrainingFile(null)
+            resetRecording()
             await refreshModels()
         } catch (e: any) {
-            message.error(e.message)
+            if (isServiceSwitchingError(e)) {
+                message.info('云端服务正在切换中（单卡省显存模式），请稍等 30–120 秒后再试。')
+            } else {
+                message.error(e.message)
+            }
         } finally {
+            stopHint()
             setTraining(false)
         }
     }
 
     return (
-        <Card size="small" title="声音克隆（云端 CosyVoice）" style={{ borderRadius: 12 }}>
+        <Card size="small" title="🎙️ 专属AI声音" style={{ borderRadius: 12 }}>
             <Typography.Text type="secondary">
-                当前不做登录：系统会为每台设备生成一个本地设备ID，用它来隔离你的云端声音模型。
+                打造独一无二的AI配音师，秒级克隆您的声音，无限次使用 ⚡
             </Typography.Text>
             <Divider style={{ margin: '12px 0' }} />
 
-            {online === false && (
+            {/* 统一的 GPU 服务状态显示 */}
+            <div style={{ marginBottom: 12 }}>
+                <GpuServiceStatus requiredService="cosyvoice" showDetails />
+            </div>
+
+            {digitalHumanGenerating && (
                 <Alert
                     type="warning"
                     showIcon
-                    message="云端声音服务未连接"
-                    description={`请配置 CLOUD_VOICE_SERVER_URL / CLOUD_VOICE_PORT 并确保服务可访问。${onlineMsg ? `（${onlineMsg}）` : ''}`}
-                    style={{ marginBottom: 12 }}
-                />
-            )}
-            {online === true && (
-                <Alert
-                    type="success"
-                    showIcon
-                    message="云端声音服务已连接"
-                    description={onlineMsg || `已就绪（可用模型：${readyCount}）`}
+                    message="正在生成数字人视频"
+                    description="为避免云端服务在「声音克隆/数字人」之间来回切换导致失败，声音克隆已临时禁用。请等待出片完成后再操作。"
                     style={{ marginBottom: 12 }}
                 />
             )}
 
+            {!cosyvoiceReady && schedulerOnline && !schedulerStatus?.switching && (
+                <div style={{ marginBottom: 12 }}>
+                    <Button type="primary" onClick={connectCosyvoice} disabled={digitalHumanGenerating} block>
+                        切换到声音克隆服务
+                    </Button>
+                </div>
+            )}
+
             <Space direction="vertical" style={{ width: '100%' }} size="large">
-                <Card size="small" title="训练我的声音">
+                <Alert
+                    type="info"
+                    showIcon
+                    message="为什么有时会等待？"
+                    description="如果你用的是单卡 8GB（调度器 9999），系统会在「声音克隆」和「数字人视频」之间自动切换云端服务，同一时间只运行一个以避免显存不足；首次切换通常需要 30–120 秒。"
+                />
+                <Card size="small" title="🚀 秒级克隆">
                     <Space direction="vertical" style={{ width: '100%' }}>
                         <Input
-                            placeholder="给声音起个名字（例如：张三-口播）"
+                            placeholder="给声音起个名字（例如：商务口播）"
                             value={trainingName}
                             onChange={(e) => setTrainingName(e.target.value)}
+                            disabled={digitalHumanGenerating}
                         />
-                        <Upload
-                            accept="audio/*"
-                            beforeUpload={handleUpload}
-                            showUploadList={false}
-                            disabled={training || online !== true}
-                        >
-                            <Button icon={<UploadOutlined />} block disabled={training || online !== true}>
-                                {trainingFile ? trainingFile.name : '上传声音样本（建议 30-90 秒，清晰无噪）'}
-                            </Button>
-                        </Upload>
+                        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                            <Space wrap>
+                                {!recording ? (
+                                    <Button type="primary" onClick={startRecording} disabled={digitalHumanGenerating || training || !cosyvoiceReady}>
+                                        开始录音
+                                    </Button>
+                                ) : (
+                                    <Button danger onClick={stopRecording} disabled={digitalHumanGenerating || training || !cosyvoiceReady}>
+                                        停止录音
+                                    </Button>
+                                )}
+                                <Typography.Text type="secondary">
+                                    建议 30-90 秒，环境安静，连续说话
+                                </Typography.Text>
+                                {(recording || recordSeconds > 0) && (
+                                    <Tag color={recording ? 'blue' : 'default'}>
+                                        {recording ? '录音中' : '已录制'} {String(Math.floor(recordSeconds / 60)).padStart(2, '0')}:
+                                        {String(recordSeconds % 60).padStart(2, '0')}
+                                    </Tag>
+                                )}
+                            </Space>
+                            {recordedUrl && (
+                                <div>
+                                    <audio src={recordedUrl} controls style={{ width: '100%' }} />
+                                    <div style={{ marginTop: 8 }}>
+                                        <Button onClick={startRecording} disabled={digitalHumanGenerating || training || !cosyvoiceReady}>
+                                            重录
+                                        </Button>
+                                    </div>
+                                </div>
+                            )}
+                        </Space>
                         {training && (
                             <div>
                                 <Progress percent={progress} status="active" />
@@ -203,18 +383,18 @@ export default function VoiceCloneSettings() {
                             type="primary"
                             loading={training}
                             onClick={handleTrain}
-                            disabled={online !== true || !trainingFile || !trainingName.trim()}
+                            disabled={digitalHumanGenerating || !cosyvoiceReady || recording || !recordedBlob || !trainingName.trim()}
                             block
                         >
-                            开始训练
+                            开始克隆
                         </Button>
                     </Space>
                 </Card>
 
                 <Card
                     size="small"
-                    title="我的声音列表"
-                    extra={<Button icon={<ReloadOutlined />} onClick={() => { refreshStatus(); refreshModels() }} />}
+                    title="🎤 我的专属声音"
+                    extra={<Button icon={<ReloadOutlined />} disabled={digitalHumanGenerating} onClick={() => (cosyvoiceReady ? refreshModels() : connectCosyvoice())} />}
                 >
                     {models.length === 0 ? (
                         <div style={{ textAlign: 'center', color: '#999', padding: 12 }}>

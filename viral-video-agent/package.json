@@ -4,13 +4,10 @@
   "description": "一键追爆 - 全自动AI智能体",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "npm run electron:dev",
-    "web:dev": "vite",
-    "build": "node scripts/build-electron.js && vite build && electron-builder",
-    "preview": "vite preview",
-    "electron:compile": "node scripts/build-electron.js",
-    "electron:dev": "node scripts/build-electron.js && concurrently \"cross-env NODE_ENV=development vite\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
-    "electron:build": "node scripts/build-electron.js && vite build && electron-builder"
+    "dev:clean": "node scripts/clean.js",
+    "dev": "npm run dev:clean && npm run electron:dev",
+    "electron:dev": "cross-env NODE_ENV=development node scripts/build-electron.js && concurrently \"cross-env NODE_ENV=development vite --config vite.config.ts\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
+    "electron:build": "node scripts/build-electron.js && vite build --config vite.config.ts && electron-builder"
   },
   "keywords": [
     "electron",

@@ -8,7 +8,7 @@ import path from 'path'
 import { downloadDouyinVideo, fetchProfileVideos, isProfileUrl } from '../src/services/douyinService'
 import { transcribeAudio, AsrConfig } from '../src/services/asrService'
 import { generateSpeechFile, TtsConfig, getVoiceOptions } from '../src/services/ttsService'
-import { rewriteCopy, generateTitles, generateHashtags, HunyuanConfig } from '../src/services/hunyuanService'
+import { rewriteCopy, generateTitles, generateHashtags, analyzeCopyPattern, HunyuanConfig } from '../src/services/hunyuanService'
 import {
     getDefaultConfig as getDigitalHumanConfig,
     generateVideo as generateDigitalHumanVideo,
@@ -28,6 +28,14 @@ import { randomBytes, randomUUID } from 'crypto'
 
 let socialAutoUploadProc: ReturnType<typeof spawn> | null = null
 let socialAutoUploadWindow: BrowserWindow | null = null
+
+const schedulerStatusTimeout = parseInt(process.env.SCHEDULER_STATUS_TIMEOUT || '20000', 10)
+const SCHEDULER_STATUS_TIMEOUT = Number.isFinite(schedulerStatusTimeout) && schedulerStatusTimeout > 0
+    ? schedulerStatusTimeout
+    : 20000
+const debugScheduler = process.env.DEBUG_SCHEDULER === '1'
+const schedulerHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 8, keepAliveMsecs: 5000 })
+let schedulerStatusInFlight: Promise<any> | null = null
 
 function uuidv4(): string {
     if (typeof randomUUID === 'function') return randomUUID()
@@ -318,6 +326,31 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     let config = getConfig()
     const deviceId = getOrCreateDeviceId()
 
+    const normalizeHttpUrl = (raw: string): string => {
+        const trimmed = (raw || '').trim().replace(/\/+$/, '')
+        if (!trimmed) return ''
+        if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed
+        return `http://${trimmed}`
+    }
+
+    const getCloudVoiceRuntime = () => {
+        const serverUrlRaw = config.extra?.cloudVoiceServerUrl || process.env.CLOUD_VOICE_SERVER_URL || ''
+        const portRaw = config.extra?.cloudVoicePort || process.env.CLOUD_VOICE_PORT || '9090'
+        return {
+            serverUrl: normalizeHttpUrl(serverUrlRaw),
+            port: parseInt(portRaw, 10),
+        }
+    }
+
+    const getCloudGpuRuntime = () => {
+        const serverUrlRaw = config.extra?.cloudGpuServerUrl || process.env.CLOUD_GPU_SERVER_URL || ''
+        const portRaw = config.extra?.cloudGpuVideoPort || process.env.CLOUD_GPU_VIDEO_PORT || '8383'
+        return {
+            serverUrl: normalizeHttpUrl(serverUrlRaw),
+            videoPort: parseInt(portRaw, 10),
+        }
+    }
+
     // ========== 系统配置 IPC ==========
     ipcMain.handle('config-get', async () => {
         const full = getConfig()
@@ -430,17 +463,154 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
+    // ========== GPU 调度器状态 ==========
+
+    // 获取调度器端口（固定 9999）
+    const getSchedulerUrl = () => {
+        const { serverUrl } = getCloudGpuRuntime()
+        if (!serverUrl) return null
+        // 调度器端口固定为 9999
+        const base = serverUrl.replace(/:\d+$/, '')
+        return `${base}:9999`
+    }
+
+    ipcMain.handle('scheduler-get-status', async () => {
+        if (schedulerStatusInFlight) return schedulerStatusInFlight
+
+        schedulerStatusInFlight = (async () => {
+            try {
+                const schedulerUrl = getSchedulerUrl()
+                if (debugScheduler) console.log('[Scheduler] URL:', schedulerUrl)
+
+                if (!schedulerUrl) {
+                    return {
+                        success: false,
+                        error: '未配置 GPU 服务器地址',
+                        data: { online: false }
+                    }
+                }
+
+                const result = await new Promise<any>((resolve, reject) => {
+                    if (debugScheduler) console.log('[Scheduler] Fetching:', `${schedulerUrl}/status`)
+                    let didTimeout = false
+                    const req = http.get(`${schedulerUrl}/status`, {
+                        timeout: SCHEDULER_STATUS_TIMEOUT,
+                        agent: schedulerHttpAgent,
+                        headers: {
+                            'User-Agent': 'ViralVideoAgent/1.0',
+                            'Accept': 'application/json',
+                        }
+                    }, (res) => {
+                        res.setEncoding('utf8')
+                        let data = ''
+                        res.on('data', chunk => data += chunk)
+                        res.on('end', () => {
+                            if (debugScheduler) console.log('[Scheduler] Got data:', data.substring(0, 200))
+                            if (res.statusCode && res.statusCode >= 400) {
+                                reject(new Error(`调度器返回错误: HTTP ${res.statusCode}`))
+                                return
+                            }
+                            try {
+                                resolve(JSON.parse(data))
+                            } catch {
+                                resolve(data)
+                            }
+                        })
+                    })
+                    req.on('timeout', () => {
+                        if (debugScheduler) console.error('[Scheduler] Timeout')
+                        didTimeout = true
+                        req.destroy()
+                        reject(new Error('调度器请求超时'))
+                    })
+                    req.on('error', (e) => {
+                        if (didTimeout && (e as NodeJS.ErrnoException)?.code === 'ECONNRESET') {
+                            return
+                        }
+                        if (debugScheduler) console.error('[Scheduler] Error:', (e as any)?.message || e)
+                        reject(e)
+                    })
+                })
+
+                return {
+                    success: true,
+                    data: {
+                        ...result,
+                        online: true,
+                    }
+                }
+            } catch (error: any) {
+                if (debugScheduler) console.error('[Scheduler] Catch error:', error.message)
+                return {
+                    success: false,
+                    error: error.message,
+                    data: { online: false }
+                }
+            } finally {
+                schedulerStatusInFlight = null
+            }
+        })()
+
+        return schedulerStatusInFlight
+    })
+
+    ipcMain.handle('scheduler-preswitch', async (_event, service: string) => {
+        try {
+            const schedulerUrl = getSchedulerUrl()
+            if (!schedulerUrl) {
+                return { success: false, error: '未配置 GPU 服务器地址' }
+            }
+
+            if (!['cosyvoice', 'duix'].includes(service)) {
+                return { success: false, error: '无效的服务类型' }
+            }
+
+            const result = await new Promise<any>((resolve, reject) => {
+                const req = http.request(`${schedulerUrl}/preswitch/${service}`, {
+                    method: 'POST',
+                    timeout: 10000,
+                    agent: schedulerHttpAgent,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'ViralVideoAgent/1.0',
+                    },
+                }, (res) => {
+                    let data = ''
+                    res.on('data', chunk => data += chunk)
+                    res.on('end', () => {
+                        try {
+                            resolve(JSON.parse(data))
+                        } catch {
+                            resolve(data)
+                        }
+                    })
+                })
+                req.on('timeout', () => {
+                    req.destroy()
+                    reject(new Error('预热请求超时'))
+                })
+                req.on('error', reject)
+                req.end()
+            })
+
+            return { success: true, data: result }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
+
     // ========== 云端声音克隆（CosyVoice）==========
     ipcMain.handle('cloud-voice-check-status', async () => {
         try {
             const { checkCloudVoiceStatus } = await import('../src/services/cloudVoiceService')
+            const { serverUrl, port } = getCloudVoiceRuntime()
             const status = await checkCloudVoiceStatus({
-                serverUrl: process.env.CLOUD_VOICE_SERVER_URL,
-                port: parseInt(process.env.CLOUD_VOICE_PORT || '9090'),
+                serverUrl,
+                port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
             })
-            return { success: true, data: status }
+            return { success: true, data: { ...status, endpoint: `${serverUrl}:${port}` } }
         } catch (error: any) {
             return { success: false, error: error.message }
         }
@@ -449,9 +619,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     ipcMain.handle('cloud-voice-list-models', async () => {
         try {
             const { listVoiceModels } = await import('../src/services/cloudVoiceService')
+            const { serverUrl, port } = getCloudVoiceRuntime()
             const models = await listVoiceModels({
-                serverUrl: process.env.CLOUD_VOICE_SERVER_URL,
-                port: parseInt(process.env.CLOUD_VOICE_PORT || '9090'),
+                serverUrl,
+                port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
             })
@@ -477,9 +648,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             const tempAudioPath = path.join(tempDir, safeName)
             fs.writeFileSync(tempAudioPath, Buffer.from(b64, 'base64'))
 
+            const { serverUrl, port } = getCloudVoiceRuntime()
             const { voiceId } = await trainVoiceModel({
-                serverUrl: process.env.CLOUD_VOICE_SERVER_URL,
-                port: parseInt(process.env.CLOUD_VOICE_PORT || '9090'),
+                serverUrl,
+                port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
             }, { name, audioPath: tempAudioPath })
@@ -493,9 +665,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     ipcMain.handle('cloud-voice-get-model', async (_event, voiceId: string) => {
         try {
             const { getVoiceModel } = await import('../src/services/cloudVoiceService')
+            const { serverUrl, port } = getCloudVoiceRuntime()
             const model = await getVoiceModel({
-                serverUrl: process.env.CLOUD_VOICE_SERVER_URL,
-                port: parseInt(process.env.CLOUD_VOICE_PORT || '9090'),
+                serverUrl,
+                port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
             }, voiceId)
@@ -513,9 +686,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             const voiceId = (params?.voiceId || '').trim()
             if (!voiceId) throw new Error('voiceId 为空')
 
+            const { serverUrl, port } = getCloudVoiceRuntime()
             const audioPath = await synthesizeWithVoice({
-                serverUrl: process.env.CLOUD_VOICE_SERVER_URL,
-                port: parseInt(process.env.CLOUD_VOICE_PORT || '9090'),
+                serverUrl,
+                port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
             }, { voiceId, text })
@@ -776,6 +950,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 text,
                 mode as any,
                 instruction
+            )
+            return { success: true, data: result }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
+
+    // ========== 文案模式分析 ==========
+    ipcMain.handle('analyze-copy-pattern', async (_event, copies: string) => {
+        try {
+            const result = await analyzeCopyPattern(
+                config.tencent as HunyuanConfig,
+                copies
             )
             return { success: true, data: result }
         } catch (error: any) {
@@ -1566,12 +1753,13 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
     ipcMain.handle('cloud-gpu-check-status', async () => {
         try {
             const { checkCloudGpuStatus } = await import('../src/services/cloudGpuService')
+            const { serverUrl, videoPort } = getCloudGpuRuntime()
             const status = await checkCloudGpuStatus({
-                serverUrl: process.env.CLOUD_GPU_SERVER_URL,
-                videoPort: parseInt(process.env.CLOUD_GPU_VIDEO_PORT || '8383'),
+                serverUrl,
+                videoPort,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_gpu_data'),
             })
-            return { success: true, data: status }
+            return { success: true, data: { ...status, endpoint: `${serverUrl}:${videoPort}` } }
         } catch (error: any) {
             return { success: false, error: error.message }
         }
@@ -1636,13 +1824,13 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
             }
 
             // 否则：尝试把形象视频上传到云端 /code/data，避免后续合成时服务端找不到文件
-            const serverUrl = (process.env.CLOUD_GPU_SERVER_URL || '').trim()
+            const { serverUrl, videoPort } = getCloudGpuRuntime()
             if (serverUrl) {
                 const { uploadAvatarVideo } = await import('../src/services/cloudGpuService')
                 const uploaded = await uploadAvatarVideo(
                     {
                         serverUrl,
-                        videoPort: parseInt(process.env.CLOUD_GPU_VIDEO_PORT || '8383'),
+                        videoPort,
                         localDataPath,
                     },
                     localPreviewPath,
@@ -1704,8 +1892,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
 
             const videoPath = await generateCloudVideoWithLocalPaths(
                 {
-                    serverUrl: process.env.CLOUD_GPU_SERVER_URL,
-                    videoPort: parseInt(process.env.CLOUD_GPU_VIDEO_PORT || '8383'),
+                    ...getCloudGpuRuntime(),
                     localDataPath: path.join(app.getPath('userData'), 'cloud_gpu_data'),
                 },
                 params.avatarVideoPath,

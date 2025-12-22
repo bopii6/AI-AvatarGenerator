@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 
 export interface PipelineState {
+    // 当前面板（UI 导航用）
+    activeKey: string
+    setActiveKey: (key: string) => void
+
     // 当前步骤
     currentStep: number
     setCurrentStep: (step: number) => void
@@ -20,6 +24,9 @@ export interface PipelineState {
     videoPath: string | null
     setVideoPath: (path: string) => void
 
+    batchVideos: { title: string; videoPath: string }[]
+    setBatchVideos: (videos: { title: string; videoPath: string }[]) => void
+
     // 提取的文案
     originalCopy: string
     setOriginalCopy: (copy: string) => void
@@ -28,9 +35,29 @@ export interface PipelineState {
     rewrittenCopy: string
     setRewrittenCopy: (copy: string) => void
 
+    // 批量文案（每个视频独立存储）
+    batchCopies: { title: string; copy: string }[]
+    setBatchCopies: (copies: { title: string; copy: string }[]) => void
+
+    batchRewrittenCopies: { title: string; copy: string }[]
+    setBatchRewrittenCopies: (copies: { title: string; copy: string }[]) => void
+    updateBatchRewrittenCopy: (index: number, title: string, copy: string) => void
+
+    digitalHumanSelectedCopy: { title: string; copy: string } | null
+    setDigitalHumanSelectedCopy: (value: { title: string; copy: string } | null) => void
+
+    digitalHumanScriptConfirmed: boolean
+    setDigitalHumanScriptConfirmed: (confirmed: boolean) => void
+
+    digitalHumanGenerating: boolean
+    digitalHumanProgress: number
+    digitalHumanProgressText: string
+    setDigitalHumanGenerating: (generating: boolean) => void
+    setDigitalHumanProgress: (progress: number, text?: string) => void
+
     // 生成的音频路径
     audioPath: string | null
-    setAudioPath: (path: string) => void
+    setAudioPath: (path: string | null) => void
 
     // 用户导入的本地音频（用于ASR提取文案）
     inputAudioPath: string | null
@@ -74,13 +101,22 @@ export interface PipelineState {
 }
 
 const initialState = {
+    activeKey: 'material',
     currentStep: 0,
     isRunning: false,
     douyinUrl: '',
     sourceVideoPath: null,
     videoPath: null,
+    batchVideos: [],
     originalCopy: '',
     rewrittenCopy: '',
+    batchCopies: [],
+    batchRewrittenCopies: [],
+    digitalHumanSelectedCopy: null,
+    digitalHumanScriptConfirmed: false,
+    digitalHumanGenerating: false,
+    digitalHumanProgress: 0,
+    digitalHumanProgressText: '',
     audioPath: null,
     inputAudioPath: null,
     digitalHumanVideoPath: null,
@@ -96,12 +132,27 @@ const initialState = {
 export const useAppStore = create<PipelineState>((set) => ({
     ...initialState,
 
+    setActiveKey: (key) => set({ activeKey: key }),
     setCurrentStep: (step) => set({ currentStep: step }),
     setDouyinUrl: (url) => set({ douyinUrl: url }),
     setSourceVideoPath: (path) => set({ sourceVideoPath: path }),
     setVideoPath: (path) => set({ videoPath: path }),
+    setBatchVideos: (videos) => set({ batchVideos: videos }),
     setOriginalCopy: (copy) => set({ originalCopy: copy }),
     setRewrittenCopy: (copy) => set({ rewrittenCopy: copy }),
+    setBatchCopies: (copies) => set({ batchCopies: copies }),
+    setBatchRewrittenCopies: (copies) => set({ batchRewrittenCopies: copies }),
+    updateBatchRewrittenCopy: (index, title, copy) =>
+        set((state) => {
+            const next = [...state.batchRewrittenCopies]
+            next[index] = { title, copy }
+            return { batchRewrittenCopies: next }
+        }),
+    setDigitalHumanSelectedCopy: (value) => set({ digitalHumanSelectedCopy: value, digitalHumanScriptConfirmed: false }),
+    setDigitalHumanScriptConfirmed: (confirmed) => set({ digitalHumanScriptConfirmed: confirmed }),
+    setDigitalHumanGenerating: (generating) => set({ digitalHumanGenerating: generating }),
+    setDigitalHumanProgress: (progress, text) =>
+        set({ digitalHumanProgress: progress, digitalHumanProgressText: text ?? '' }),
     setAudioPath: (path) => set({ audioPath: path }),
     setInputAudioPath: (path) => set({ inputAudioPath: path }),
     setDigitalHumanVideoPath: (path) => set({ digitalHumanVideoPath: path }),

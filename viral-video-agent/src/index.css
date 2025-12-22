@@ -159,8 +159,10 @@ body {
 /* 中间操作区 */
 .workspace {
   flex: 1;
+  min-width: 0;
   padding: 28px 22px;
   overflow-y: auto;
+  overflow-x: hidden;
   background: transparent;
 }
 

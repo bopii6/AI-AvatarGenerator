@@ -82,7 +82,7 @@ const defaultConfig: CloudGpuConfig = {
 /**
  * HTTP POST JSON 请求
  */
-async function postJSON(url: string, data: object, timeout = 30000): Promise<any> {
+async function postJSON(url: string, data: object, timeout = 30000, retryCount = 0): Promise<any> {
     return new Promise((resolve, reject) => {
         const urlObj = new URL(url)
         const protocol = urlObj.protocol === 'https:' ? https : http
@@ -100,6 +100,15 @@ async function postJSON(url: string, data: object, timeout = 30000): Promise<any
             let responseData = ''
             res.on('data', chunk => responseData += chunk)
             res.on('end', () => {
+                // 503 = 服务切换中，自动重试（最多等待 2 分钟）
+                if (res.statusCode === 503 && retryCount < 12) {
+                    console.log(`[cloudGpuService] Service switching, retry in 10s... (${retryCount + 1}/12)`)
+                    setTimeout(() => {
+                        postJSON(url, data, timeout, retryCount + 1).then(resolve).catch(reject)
+                    }, 10000)
+                    return
+                }
+
                 try {
                     resolve(JSON.parse(responseData))
                 } catch {
@@ -121,7 +130,7 @@ async function postJSON(url: string, data: object, timeout = 30000): Promise<any
 /**
  * HTTP GET 请求
  */
-async function getJSON(url: string, timeout = 30000): Promise<any> {
+async function getJSON(url: string, timeout = 30000, retryCount = 0): Promise<any> {
     return new Promise((resolve, reject) => {
         const urlObj = new URL(url)
         const protocol = urlObj.protocol === 'https:' ? https : http
@@ -130,6 +139,15 @@ async function getJSON(url: string, timeout = 30000): Promise<any> {
             let data = ''
             res.on('data', chunk => data += chunk)
             res.on('end', () => {
+                // 503 = 服务切换中，自动重试（最多等待 2 分钟）
+                if (res.statusCode === 503 && retryCount < 12) {
+                    console.log(`[cloudGpuService] Service switching, retry in 10s... (${retryCount + 1}/12)`)
+                    setTimeout(() => {
+                        getJSON(url, timeout, retryCount + 1).then(resolve).catch(reject)
+                    }, 10000)
+                    return
+                }
+
                 try {
                     resolve(JSON.parse(data))
                 } catch {
@@ -154,7 +172,8 @@ async function uploadFile(
     filePath: string,
     fieldName: string = 'file',
     onProgress?: (percent: number) => void,
-    remoteFileName?: string
+    remoteFileName?: string,
+    retryCount: number = 0
 ): Promise<any> {
     return new Promise((resolve, reject) => {
         const fileSize = fs.statSync(filePath).size
@@ -192,6 +211,14 @@ async function uploadFile(
             res.on('data', chunk => data += chunk)
             res.on('end', () => {
                 const statusCode = res.statusCode || 0
+                // 503 = 服务切换中，自动重试（最多等 2 分钟）
+                if (statusCode === 503 && retryCount < 12) {
+                    console.log(`[cloudGpuService] Service switching (upload), retry in 10s... (${retryCount + 1}/12)`)
+                    setTimeout(() => {
+                        uploadFile(url, filePath, fieldName, onProgress, remoteFileName, retryCount + 1).then(safeResolve).catch(safeReject)
+                    }, 10000)
+                    return
+                }
                 if (statusCode < 200 || statusCode >= 300) {
                     const snippet = (data || '').toString().slice(0, 200)
                     safeReject(new Error(`上传失败 (HTTP ${statusCode}) ${snippet ? `: ${snippet}` : ''}`))

@@ -71,7 +71,12 @@ function createWindow() {
 
     // 开发模式加载本地服务器，生产模式加载打包文件
     if (process.env.NODE_ENV === 'development') {
-        mainWindow.loadURL('http://localhost:5173')
+        // 强制清理开发缓存
+        const { session } = require('electron')
+        session.defaultSession.clearCache().then(() => {
+            console.log('[Dev] 缓存已清理，加载最新本地服务器...')
+            mainWindow?.loadURL('http://localhost:5173')
+        })
         mainWindow.webContents.openDevTools()
     } else {
         mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))

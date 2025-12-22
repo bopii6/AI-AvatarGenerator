@@ -1,14 +1,10 @@
-import { Alert, Button, Segmented, Select, Space, Spin, message } from 'antd'
+import { Alert, Button, Select, Space, Spin, message } from 'antd'
 import { SoundOutlined, ReloadOutlined } from '@ant-design/icons'
-import { useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
-
-interface VoiceOption {
-    voiceType: number
-    name: string
-    gender: 'male' | 'female' | 'child'
-    description: string
-}
+import { isServiceSwitchingError, startServiceSwitchingHint } from '../../utils/serviceSwitchingHint'
+import { useGpuScheduler } from '../../contexts/GpuSchedulerContext'
+import GpuServiceStatus from '../GpuServiceStatus'
 
 function toFileUrl(filePath: string): string {
     if (filePath.startsWith('file://')) filePath = filePath.slice(7)
@@ -21,38 +17,29 @@ function toFileUrl(filePath: string): string {
 }
 
 function AudioPanel() {
-    const [mode, setMode] = useState<'preset' | 'clone'>('preset')
-    const [voices, setVoices] = useState<VoiceOption[]>([])
-    const [selectedVoice, setSelectedVoice] = useState<number>(101001)
-    const [cloudOnline, setCloudOnline] = useState<boolean | null>(null)
-    const [cloudOnlineMsg, setCloudOnlineMsg] = useState<string>('')
     const [cloudModels, setCloudModels] = useState<Array<{ id: string; name: string; status: string }>>([])
     const [selectedCloudVoiceId, setSelectedCloudVoiceId] = useState<string>('')
     const [loading, setLoading] = useState(false)
-    const { rewrittenCopy, originalCopy, audioPath, setAudioPath, setPreview, setCurrentStep } = useAppStore()
+    const [errorText, setErrorText] = useState('')
+    const { rewrittenCopy, originalCopy, audioPath, setAudioPath, setPreview, setActiveKey, digitalHumanGenerating } = useAppStore()
+
+    const { status: schedulerStatus, isRunning: isServiceRunning, preswitch } = useGpuScheduler()
+    const schedulerOnline = !!schedulerStatus?.online
+    const cosyvoiceReady = schedulerOnline
+        && !schedulerStatus?.switching
+        && isServiceRunning('cosyvoice')
+        && !!schedulerStatus?.servicesHealth?.cosyvoice
+    const pendingLoadModelsRef = useRef(false)
 
     const textToSpeak = rewrittenCopy || originalCopy
 
-    // 加载音色列表
+    // 读取用户选择的“克隆声音模型”
     useEffect(() => {
         try {
-            const savedMode = localStorage.getItem('audio.voiceMode')
-            if (savedMode === 'preset' || savedMode === 'clone') setMode(savedMode)
-            const savedPreset = localStorage.getItem('audio.presetVoiceId')
-            if (savedPreset && /^\d+$/.test(savedPreset)) setSelectedVoice(parseInt(savedPreset, 10))
             const savedCloud = localStorage.getItem('audio.cloudVoiceId')
             if (savedCloud) setSelectedCloudVoiceId(savedCloud)
         } catch { /* ignore */ }
-        loadVoices()
     }, [])
-
-    useEffect(() => {
-        try { localStorage.setItem('audio.voiceMode', mode) } catch { /* ignore */ }
-    }, [mode])
-
-    useEffect(() => {
-        try { localStorage.setItem('audio.presetVoiceId', String(selectedVoice)) } catch { /* ignore */ }
-    }, [selectedVoice])
 
     useEffect(() => {
         if (!selectedCloudVoiceId) return
@@ -60,36 +47,34 @@ function AudioPanel() {
     }, [selectedCloudVoiceId])
 
     useEffect(() => {
-        if (mode !== 'clone') return
+        if (digitalHumanGenerating) return
         loadCloudModels()
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [mode])
-
-    const loadVoices = async () => {
-        try {
-            const result = await window.electronAPI?.invoke('get-voice-options')
-            if (result?.success && result.data) {
-                setVoices(result.data)
-                // 如果当前选择的音色不在列表中，默认选择第一个
-                if (result.data.length > 0) {
-                    setSelectedVoice(result.data[0].voiceType)
-                }
-            }
-        } catch (error) {
-            console.error('加载音色失败:', error)
-            message.error('加载音色列表失败')
-        }
-    }
+    }, [digitalHumanGenerating])
 
     const handleGenerate = async () => {
         if (!textToSpeak) return
+        if (digitalHumanGenerating) {
+            message.warning('正在生成数字人视频，为避免云端服务切换导致失败，请等待完成后再生成音频')
+            return
+        }
+        if (!selectedCloudVoiceId) {
+            message.warning('请先选择你的声音模型')
+            return
+        }
+        if (!cosyvoiceReady) {
+            message.info('正在准备声音克隆服务，请稍候...')
+            pendingLoadModelsRef.current = true
+            await preswitch('cosyvoice')
+            return
+        }
 
         setLoading(true)
+        setErrorText('')
+        const stopHint = startServiceSwitchingHint('生成音频')
 
         try {
-            const result = mode === 'preset'
-                ? await window.electronAPI?.invoke('generate-speech', textToSpeak, selectedVoice)
-                : await window.electronAPI?.invoke('cloud-voice-tts', { voiceId: selectedCloudVoiceId, text: textToSpeak })
+            const result = await window.electronAPI?.invoke('cloud-voice-tts', { voiceId: selectedCloudVoiceId, text: textToSpeak })
 
             if (result?.success && result.data?.audioPath) {
                 setAudioPath(result.data.audioPath)
@@ -100,24 +85,23 @@ function AudioPanel() {
             }
         } catch (error: any) {
             console.error('生成失败:', error)
-            message.error(`生成失败: ${error.message}`)
+            if (isServiceSwitchingError(error)) {
+                const msg = '云端服务正在切换中（单卡省显存模式），请稍等 30–120 秒后再试。'
+                setErrorText(msg)
+                message.info(msg)
+            } else {
+                const msg = `生成失败：${error?.message || '未知错误'}`
+                setErrorText(msg)
+                message.error(msg)
+            }
         } finally {
+            stopHint()
             setLoading(false)
         }
     }
 
     const loadCloudModels = async () => {
-        try {
-            const status = await window.electronAPI?.invoke('cloud-voice-check-status')
-            const ok = !!(status?.success && status.data?.online)
-            setCloudOnline(ok)
-            setCloudOnlineMsg(status?.data?.message || status?.error || '')
-            if (!ok) {
-                setCloudModels([])
-                setSelectedCloudVoiceId('')
-                return
-            }
-
+        const fetchModels = async () => {
             const modelsRes = await window.electronAPI?.invoke('cloud-voice-list-models')
             if (modelsRes?.success && Array.isArray(modelsRes.data)) {
                 const models = modelsRes.data
@@ -128,27 +112,86 @@ function AudioPanel() {
                 if (!selectedCloudVoiceId && ready) {
                     setSelectedCloudVoiceId(ready.id)
                 }
+                return
             }
+
+            setCloudModels([])
+            setSelectedCloudVoiceId('')
+        }
+
+        try {
+            if (digitalHumanGenerating) {
+                message.warning('正在生成数字人视频，为避免云端服务切换导致失败，暂不加载云端模型列表')
+                return
+            }
+            if (!schedulerOnline) {
+                setCloudModels([])
+                setSelectedCloudVoiceId('')
+                message.warning('调度器未连接，请先检查服务器设置')
+                return
+            }
+
+            if (schedulerStatus?.switching) {
+                pendingLoadModelsRef.current = true
+                return
+            }
+
+            if (!cosyvoiceReady) {
+                pendingLoadModelsRef.current = true
+                const res = await preswitch('cosyvoice')
+                if (res && res.success === false) {
+                    pendingLoadModelsRef.current = false
+                    message.warning(res.message || '切换声音克隆服务失败')
+                    return
+                }
+                message.info('正在切换到声音克隆服务，请稍候...')
+                return
+            }
+
+            pendingLoadModelsRef.current = false
+            await fetchModels()
         } catch {
-            setCloudOnline(false)
-            setCloudOnlineMsg('')
             setCloudModels([])
             setSelectedCloudVoiceId('')
         }
     }
 
-    const voiceOptions = voices.map(v => ({
-        value: v.voiceType,
-        label: `${v.name} (${v.description})`
-    }))
+    useEffect(() => {
+        if (digitalHumanGenerating) return
+        if (!pendingLoadModelsRef.current) return
+        if (!cosyvoiceReady) return
+        pendingLoadModelsRef.current = false
+        // 切换完成后自动加载一次
+        loadCloudModels()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [cosyvoiceReady, digitalHumanGenerating])
 
     return (
         <div>
             <p style={{ marginBottom: 16, color: '#666' }}>
-                生成口播音频：支持预置音色（腾讯云）或克隆你的声音（云端 CosyVoice）。
+                生成口播音频：仅支持克隆你的声音（云端 CosyVoice）。
             </p>
 
             <Space direction="vertical" style={{ width: '100%' }} size="large">
+                {digitalHumanGenerating && (
+                    <Alert
+                        type="warning"
+                        showIcon
+                        message="正在生成数字人视频"
+                        description="为避免云端服务在「声音克隆/数字人」之间来回切换导致失败，音频生成已临时禁用。请等待出片完成后再操作。"
+                    />
+                )}
+
+                {!!errorText && (
+                    <Alert
+                        type="error"
+                        showIcon
+                        message="音频合成失败"
+                        description={errorText}
+                        closable
+                        onClose={() => setErrorText('')}
+                    />
+                )}
                 {!textToSpeak && (
                     <div style={{ padding: 24, background: '#fffbe6', borderRadius: 8, border: '1px solid #ffe58f' }}>
                         ⚠️ 请先完成文案提取或改写步骤
@@ -156,62 +199,35 @@ function AudioPanel() {
                 )}
 
                 <div>
-                    <div style={{ marginBottom: 8, fontWeight: 500 }}>声音来源</div>
-                    <Segmented
-                        value={mode}
-                        onChange={(v) => setMode(v as any)}
-                        options={[
-                            { label: '预置音色', value: 'preset' },
-                            { label: '克隆我的声音', value: 'clone' },
-                        ]}
+                    <Alert
+                        type="info"
+                        showIcon
+                        message="为什么有时会等待？"
+                        description="如果你用的是单卡 8GB（调度器 9999），系统会在「声音克隆」和「数字人视频」之间自动切换云端服务；首次切换通常需要 30–120 秒，属于正常现象。"
+                        style={{ marginBottom: 12 }}
                     />
+                    <div style={{ marginBottom: 12 }}>
+                        <GpuServiceStatus requiredService="cosyvoice" showDetails />
+                    </div>
+                    <div style={{ marginBottom: 8, fontWeight: 500 }}>选择我的声音模型</div>
+                    <Space>
+                        <Select
+                            value={selectedCloudVoiceId}
+                            onChange={setSelectedCloudVoiceId}
+                            options={cloudModels.filter(m => m.status === 'ready').map(m => ({ value: m.id, label: m.name }))}
+                            style={{ width: 320 }}
+                            size="large"
+                            placeholder={cosyvoiceReady ? '请选择你的声音模型' : '等待云端服务就绪...'}
+                            disabled={digitalHumanGenerating || !cosyvoiceReady || cloudModels.length === 0}
+                        />
+                        <Button icon={<ReloadOutlined />} onClick={loadCloudModels} disabled={digitalHumanGenerating}>刷新模型列表</Button>
+                    </Space>
+                    {cosyvoiceReady && cloudModels.filter(m => m.status === 'ready').length === 0 && (
+                        <div style={{ marginTop: 8, color: '#999' }}>
+                            暂无可用声音模型：请先在「设置 → 声音克隆」训练你的声音。
+                        </div>
+                    )}
                 </div>
-
-                {mode === 'preset' ? (
-                    <div>
-                        <div style={{ marginBottom: 8, fontWeight: 500 }}>选择音色</div>
-                        <Space>
-                            <Select
-                                value={selectedVoice}
-                                onChange={setSelectedVoice}
-                                options={voiceOptions}
-                                style={{ width: 260 }}
-                                size="large"
-                                loading={voices.length === 0}
-                            />
-                            <Button icon={<ReloadOutlined />} onClick={loadVoices}>刷新音色列表</Button>
-                        </Space>
-                    </div>
-                ) : (
-                    <div>
-                        {cloudOnline === false && (
-                            <Alert
-                                type="warning"
-                                showIcon
-                                message="云端声音克隆服务未连接"
-                                description={`请在 .env 配置 CLOUD_VOICE_SERVER_URL / CLOUD_VOICE_PORT，并确保服务可访问。${cloudOnlineMsg ? `（${cloudOnlineMsg}）` : ''}`}
-                                style={{ marginBottom: 12 }}
-                            />
-                        )}
-                        <div style={{ marginBottom: 8, fontWeight: 500 }}>选择我的声音模型</div>
-                        <Space>
-                            <Select
-                                value={selectedCloudVoiceId}
-                                onChange={setSelectedCloudVoiceId}
-                                options={cloudModels.filter(m => m.status === 'ready').map(m => ({ value: m.id, label: m.name }))}
-                                style={{ width: 260 }}
-                                size="large"
-                                disabled={!cloudOnline || cloudModels.length === 0}
-                            />
-                            <Button icon={<ReloadOutlined />} onClick={loadCloudModels}>刷新模型列表</Button>
-                        </Space>
-                        {cloudOnline && cloudModels.filter(m => m.status === 'ready').length === 0 && (
-                            <div style={{ marginTop: 8, color: '#999' }}>
-                                暂无可用声音模型：请先在「设置 → 声音克隆」训练你的声音。
-                            </div>
-                        )}
-                    </div>
-                )}
 
                 <Button
                     type="primary"
@@ -219,7 +235,7 @@ function AudioPanel() {
                     size="large"
                     loading={loading}
                     onClick={handleGenerate}
-                    disabled={!textToSpeak || (mode === 'clone' && (!cloudOnline || !selectedCloudVoiceId))}
+                    disabled={digitalHumanGenerating || !textToSpeak || !cosyvoiceReady || !selectedCloudVoiceId}
                 >
                     生成音频
                 </Button>
@@ -241,7 +257,7 @@ function AudioPanel() {
                             您的浏览器不支持音频播放
                         </audio>
                         <div style={{ marginTop: 12 }}>
-                            <Button type="primary" onClick={() => setCurrentStep(4)}>
+                            <Button type="primary" onClick={() => setActiveKey('digitalHuman')}>
                                 下一步：生成口播数字人分身
                             </Button>
                         </div>
