@@ -12,11 +12,9 @@ import {
 import { useAppStore } from './store/appStore'
 import CookieSettings from './components/CookieSettings'
 import VoiceCloneSettings from './components/VoiceCloneSettings'
+import ApiKeySettings from './components/ApiKeySettings'
 import ServerSettings from './components/ServerSettings'
 import ProfileVideoSelector from './components/ProfileVideoSelector'
-import { useGpuScheduler } from './contexts/GpuSchedulerContext'
-import ServiceSwitchingModal from './components/ServiceSwitchingModal'
-import { ServiceType } from './services/gpuSchedulerService'
 
 // 步骤面板组件
 import CopywritingPanel from './components/panels/CopywritingPanel'
@@ -53,7 +51,6 @@ function App() {
         setBatchRewrittenCopies,
         setDigitalHumanSelectedCopy,
         videoPath,
-        audioPath,
         inputAudioPath,
         rewrittenCopy,
         digitalHumanVideoPath,
@@ -77,51 +74,11 @@ function App() {
         }
     }, [])
 
-    // GPU 服务预热
-    const { preswitch, isRunning, status } = useGpuScheduler()
-
-    const requestService = useCallback((service: ServiceType) => {
-        if (!service) return
-        if (digitalHumanGenerating) {
-            if (!isRunning(service)) {
-                message.info('正在生成数字人视频，为避免云端服务切换导致失败，已暂停自动切换；请等待生成完成后再切换步骤')
-            }
-            return
-        }
-        if (!status?.online) {
-            message.warning('调度器未连接，请先检查服务器设置')
-            return
-        }
-        if (status.unstable) {
-            message.warning('调度器连接不稳定，正在重试，请稍候...')
-            return
-        }
-
-        if (status.switching) {
-            if (status.switchingTarget === service) {
-                return
-            }
-            message.info('调度器正在切换其它服务，请稍候...')
-            return
-        }
-
-        if (isRunning(service)) return
-        preswitch(service)
-    }, [digitalHumanGenerating, status, isRunning, preswitch])
-
-    // Tab 切换时的预热逻辑
+    // Tab 切换（不在切换 Tab 时自动触发云端服务切换，避免首次进入页面被强制等待）
     const handleTabChange = useCallback((key: string) => {
         if (key === activeKey) return
-
         setActiveKey(key)
-
-        if (key === 'digitalHuman') {
-            // 数字人流程优先“先音频后视频”：没有音频时预热 cosyvoice，有音频后再切到 duix
-            requestService(audioPath ? 'duix' : 'cosyvoice')
-        } else if (key === 'audio') {
-            requestService('cosyvoice')
-        }
-    }, [activeKey, audioPath, requestService])
+    }, [activeKey, setActiveKey])
 
     const handleDownloadSingle = async (overrideUrl?: string) => {
         const targetUrl = overrideUrl || douyinUrl
@@ -492,9 +449,6 @@ function App() {
 
     return (
         <>
-            {/* 全局服务切换进度弹窗 */}
-            <ServiceSwitchingModal />
-
             {/* 顶部工具栏 - 简化版 */}
             <header className="header" style={{ justifyContent: 'center', position: 'relative' }}>
                 <div className="header-title" style={{ flex: 'none', justifyContent: 'center' }}>
@@ -707,6 +661,7 @@ function App() {
                     items={[
                         { key: 'cookie', label: '全网分发账号', children: <CookieSettings /> },
                         { key: 'voice', label: '声音克隆', children: <VoiceCloneSettings /> },
+                        { key: 'auth', label: '授权/密钥', children: <ApiKeySettings /> },
                         { key: 'server', label: '服务器设置', children: <ServerSettings /> },
                     ]}
                 />

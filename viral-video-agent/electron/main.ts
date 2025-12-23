@@ -45,6 +45,35 @@ function loadEnvFile() {
 
 loadEnvFile()
 
+function appendNoProxyHost(rawUrl: string | undefined) {
+    if (!rawUrl) return
+
+    let host = ''
+    try {
+        host = new URL(rawUrl).hostname
+    } catch {
+        host = rawUrl.replace(/^https?:\/\//, '').split(/[/:]/)[0] || ''
+    }
+
+    host = host.trim()
+    if (!host) return
+
+    const existing = (process.env.NO_PROXY || process.env.no_proxy || '').trim()
+    const parts = existing ? existing.split(',').map(s => s.trim()).filter(Boolean) : []
+
+    if (!parts.includes(host)) {
+        parts.push(host)
+    }
+
+    process.env.NO_PROXY = parts.join(',')
+    process.env.no_proxy = process.env.NO_PROXY
+}
+
+appendNoProxyHost('localhost')
+appendNoProxyHost('127.0.0.1')
+appendNoProxyHost(process.env.CLOUD_GPU_SERVER_URL)
+appendNoProxyHost(process.env.CLOUD_VOICE_SERVER_URL)
+
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { registerIpcHandlers } from './ipcHandlers'
 

@@ -12,6 +12,7 @@ import {
     UploadOutlined,
     DownloadOutlined,
     PlusOutlined,
+    ReloadOutlined,
     RocketOutlined,
     UserOutlined,
     PlayCircleOutlined,
@@ -22,7 +23,7 @@ import {
     AudioOutlined,
     FileTextOutlined,
 } from '@ant-design/icons'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
 import { useGpuScheduler } from '../../contexts/GpuSchedulerContext'
 import GpuServiceStatus from '../GpuServiceStatus'
@@ -142,6 +143,7 @@ function DigitalHumanPanel() {
     const [avatars, setAvatars] = useState<AvatarModel[]>([])
     const [selectedAvatarId, setSelectedAvatarId] = useState<string>('')
     const [avatarsLoaded, setAvatarsLoaded] = useState(false)
+    const [avatarsLoading, setAvatarsLoading] = useState(false)
     const [showNewAvatarModal, setShowNewAvatarModal] = useState(false)
     const [newAvatarName, setNewAvatarName] = useState('')
     const [newAvatarFile, setNewAvatarFile] = useState<File | null>(null)
@@ -197,8 +199,6 @@ function DigitalHumanPanel() {
     const readyForVideo = transcriptConfirmed && hasAudio
     const preferredService: 'duix' | 'cosyvoice' = readyForVideo ? 'duix' : 'cosyvoice'
 
-    const didAutoLoadAvatarsRef = useRef(false)
-
     useEffect(() => {
         if (transcriptCandidates.length === 0) return
 
@@ -225,23 +225,45 @@ function DigitalHumanPanel() {
     ])
 
     const ensureDuixReady = useCallback(async (): Promise<boolean> => {
+        if (schedulerStatus?.apiKeyError) {
+            message.error('API 密钥无效或未配置：请先在右上角「设置」里填写正确的密钥')
+            return false
+        }
         if (!schedulerOnline) {
             message.warning('调度器未连接，请先检查服务器设置')
             return false
         }
-        if (schedulerStatus?.switching) {
+
+        // 如果正在切换到其它服务，直接提示，避免用户被迫等待
+        if (schedulerStatus?.switching && schedulerStatus.switchingTarget && schedulerStatus.switchingTarget !== 'duix') {
             message.info('云端服务正在切换中，请稍候...')
             return false
         }
-        if (isServiceRunning('duix')) return true
 
-        const res = await preswitch('duix')
-        if (!res?.success) {
-            message.warning(res?.message || '切换数字人服务失败')
-            return false
+        if (!isServiceRunning('duix')) {
+            const res = await preswitch('duix')
+            if (!res?.success) {
+                message.warning(res?.message || '切换数字人服务失败')
+                return false
+            }
         }
+
+        // 等待服务就绪（仅在用户明确触发需要数字人的动作时才等）
+        const startedAt = Date.now()
+        const timeoutMs = 120_000
+        while (Date.now() - startedAt < timeoutMs) {
+            const res = await window.electronAPI?.invoke('scheduler-get-status')
+            const data = res?.data
+            if (res?.success && data?.online) {
+                const ready = !data.switching && data.current_service === 'duix' && data.services_health?.duix === true
+                if (ready) return true
+            }
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 1500))
+        }
+
+        message.error('云端服务准备超时，请稍后再试')
         return false
-    }, [isServiceRunning, preswitch, schedulerOnline, schedulerStatus?.switching])
+    }, [isServiceRunning, preswitch, schedulerOnline, schedulerStatus?.apiKeyError, schedulerStatus?.switching, schedulerStatus?.switchingTarget])
 
     const loadAvatars = useCallback(async () => {
         try {
@@ -259,27 +281,17 @@ function DigitalHumanPanel() {
     }, [selectedAvatarId])
 
     const refreshAvatars = useCallback(async () => {
-        const ready = await ensureDuixReady()
-        if (!ready) return
-        await loadAvatars()
-    }, [ensureDuixReady, loadAvatars])
-
-    // 音频就绪后再加载形象，避免 cosyvoice/duix 来回切换影响音频合成
-    useEffect(() => {
-        if (!readyForVideo) return
-        refreshAvatars()
-    }, [readyForVideo, refreshAvatars])
-
-    // 若启动时先触发了切换，切换完成后自动拉一次形象列表（仅一次）
-    useEffect(() => {
-        if (!readyForVideo) return
-        if (didAutoLoadAvatarsRef.current) return
-        if (!schedulerOnline) return
-        if (schedulerStatus?.switching) return
-        if (!isServiceRunning('duix')) return
-        didAutoLoadAvatarsRef.current = true
-        loadAvatars()
-    }, [readyForVideo, loadAvatars, isServiceRunning, schedulerOnline, schedulerStatus?.switching, schedulerStatus?.currentService])
+        if (avatarsLoading) return
+        setAvatarsLoading(true)
+        try {
+            const ready = await ensureDuixReady()
+            if (!ready) return
+            await loadAvatars()
+            setAvatarsLoaded(true)
+        } finally {
+            setAvatarsLoading(false)
+        }
+    }, [avatarsLoading, ensureDuixReady, loadAvatars])
 
     const handleSaveNewAvatar = async () => {
         if (!newAvatarFile || !newAvatarName.trim()) {
@@ -378,13 +390,16 @@ function DigitalHumanPanel() {
             return
         }
 
-        const switchRes = await window.electronAPI.invoke('scheduler-preswitch', service)
-        if (switchRes && switchRes.success === false) {
-            throw new Error(switchRes.error || `切换${label}服务失败`)
+        const preswitchRes = await preswitch(service)
+        if (!preswitchRes?.success) {
+            throw new Error(preswitchRes?.message || `切换${label}服务失败`)
+        }
+        if (preswitchRes.noSwitchNeeded) {
+            return
         }
 
         await waitForServiceReady(service)
-    }, [waitForServiceReady])
+    }, [preswitch, waitForServiceReady])
 
     const generateVideo = useCallback(async (params: { avatarVideoPath: string; audioPath: string }) => {
         const result = await window.electronAPI?.invoke('cloud-gpu-generate-video', params)
@@ -429,6 +444,8 @@ function DigitalHumanPanel() {
             })
             setDigitalHumanProgress(100, '生成完成')
             message.success('视频生成成功！')
+            // 后台切回声音服务：避免用户下一步做音频/克隆时再次等待
+            void preswitch('cosyvoice')
         } catch (e: any) {
             message.error(e.message)
         } finally {
@@ -773,32 +790,50 @@ function DigitalHumanPanel() {
                                 }}
                                 bodyStyle={{ padding: 20 }}
                             >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                        <UserOutlined style={{ fontSize: 18, color: '#1677ff' }} />
-                                        <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
-                                            我的数字人形象
-                                        </Typography.Text>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                            <UserOutlined style={{ fontSize: 18, color: '#1677ff' }} />
+                                            <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
+                                                我的数字人形象
+                                            </Typography.Text>
+                                        </div>
+                                        <Space>
+                                            <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频，避免服务来回切换' : '首次加载可能需要 30-120 秒'}>
+                                                <span>
+                                                    <Button
+                                                        icon={<ReloadOutlined />}
+                                                        onClick={() => {
+                                                            setAvatarsLoaded(false)
+                                                            void refreshAvatars()
+                                                        }}
+                                                        disabled={!readyForVideo || digitalHumanGenerating || avatarsLoading}
+                                                        style={{ borderRadius: 8 }}
+                                                    >
+                                                        {avatarsLoaded ? '刷新列表' : '加载形象'}
+                                                    </Button>
+                                                </span>
+                                            </Tooltip>
+
+                                            <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频，避免服务来回切换' : undefined}>
+                                                <span>
+                                                    <Button
+                                                        type="primary"
+                                                        icon={<PlusOutlined />}
+                                                        onClick={() => setShowNewAvatarModal(true)}
+                                                        disabled={!readyForVideo || digitalHumanGenerating || avatarsLoading}
+                                                        style={{
+                                                            borderRadius: 8,
+                                                            background: 'linear-gradient(135deg, #1677ff, #4096ff)',
+                                                            border: 'none',
+                                                            opacity: (!readyForVideo || digitalHumanGenerating || avatarsLoading) ? 0.6 : 1,
+                                                        }}
+                                                    >
+                                                        创建新形象
+                                                    </Button>
+                                                </span>
+                                            </Tooltip>
+                                        </Space>
                                     </div>
-                                    <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频，避免服务来回切换' : undefined}>
-                                        <span>
-                                            <Button
-                                                type="primary"
-                                                icon={<PlusOutlined />}
-                                                onClick={() => setShowNewAvatarModal(true)}
-                                                disabled={!readyForVideo || digitalHumanGenerating}
-                                                style={{
-                                                    borderRadius: 8,
-                                                    background: 'linear-gradient(135deg, #1677ff, #4096ff)',
-                                                    border: 'none',
-                                                    opacity: (!readyForVideo || digitalHumanGenerating) ? 0.6 : 1,
-                                                }}
-                                            >
-                                                创建新形象
-                                            </Button>
-                                        </span>
-                                    </Tooltip>
-                                </div>
 
                                 {avatars.length === 0 ? (
                                     <Empty
@@ -808,15 +843,30 @@ function DigitalHumanPanel() {
                                                 <div>
                                                     <div style={{ marginBottom: 8 }}>先完成左侧步骤</div>
                                                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                                        确认逐字稿并准备好音频后，系统会自动切换到数字人服务并加载形象。
+                                                        确认逐字稿并准备好音频后，点击右上角「加载形象」即可切换到数字人服务并加载列表。
+                                                    </Typography.Text>
+                                                </div>
+                                            ) : avatarsLoading ? (
+                                                <div>
+                                                    <div style={{ marginBottom: 8 }}>正在准备数字人服务并加载形象…</div>
+                                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                                        首次切换通常需要 30-120 秒；如长时间无响应，可点击右上角「设置」检查服务器或密钥。
                                                     </Typography.Text>
                                                 </div>
                                             ) : !avatarsLoaded ? (
                                                 <div>
-                                                    <div style={{ marginBottom: 8 }}>正在加载数字人形象…</div>
-                                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                                        如长时间无响应，可点击右上角「设置」检查服务器，或稍后重试刷新。
-                                                    </Typography.Text>
+                                                    <div style={{ marginBottom: 10 }}>还没加载形象列表</div>
+                                                    <Button
+                                                        icon={<ReloadOutlined />}
+                                                        onClick={() => {
+                                                            setAvatarsLoaded(false)
+                                                            void refreshAvatars()
+                                                        }}
+                                                        disabled={digitalHumanGenerating}
+                                                        style={{ borderRadius: 8 }}
+                                                    >
+                                                        立即加载
+                                                    </Button>
                                                 </div>
                                             ) : (
                                                 <div>

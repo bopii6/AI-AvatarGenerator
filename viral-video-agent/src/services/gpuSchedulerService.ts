@@ -36,6 +36,8 @@ export interface SchedulerStatus {
     }
     /** 错误信息 */
     error?: string
+    /** API 密钥是否无效 */
+    apiKeyError?: boolean
 }
 
 export interface PreswitchResult {

@@ -116,6 +116,19 @@ export function GpuServiceStatus({ requiredService, showDetails = false, style }
         )
     }
 
+    // API 密钥无效/未配置：不在各处高频打扰用户，这里按“未连接”展示；具体原因在设置页/操作时提示即可
+    if (status.apiKeyError) {
+        return (
+            <div style={style}>
+                <StatusBadge
+                    type="offline"
+                    text="云端未连接"
+                    tooltip="云端服务需要 API 密钥：请在右上角「设置」中检查 GPU_API_KEY 是否正确"
+                />
+            </div>
+        )
+    }
+
     // 调度器离线
     if (!status.online) {
         return (

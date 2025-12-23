@@ -5,6 +5,8 @@ import https from 'https'
 
 const DEFAULT_HTTP_TIMEOUT_MS = 120_000
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 300_000
+const DEFAULT_TTS_TIMEOUT_MS = 360_000
+const DEFAULT_CLOUD_VOICE_FILE_PORT = 9090
 
 function safeTrim(input: string | undefined | null): string {
     return (input || '').toString().trim()
@@ -26,6 +28,8 @@ export type CloudVoiceConfig = {
     /** 可选：当语音服务返回容器内路径（如 /code/data/xxx.wav）且 9090 无法下载时，使用 GPU 文件服务兜底下载 */
     fallbackDownloadServerUrl?: string // e.g. http://1.2.3.4
     fallbackDownloadPort?: number // e.g. 8383
+    /** 可选：API 密钥，用于调度器验证 */
+    apiKey?: string
 }
 
 export type CloudVoiceModel = {
@@ -43,18 +47,30 @@ function baseUrl(cfg: CloudVoiceConfig) {
     return `${root}:${cfg.port}`
 }
 
-function requestJSON(url: string, method: 'GET' | 'POST', body?: any, timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS): Promise<any> {
+function serverRootUrl(cfg: CloudVoiceConfig): string {
+    const root = safeTrim(cfg.serverUrl).replace(/\/+$/, '')
+    if (!root) throw new Error('CLOUD_VOICE_SERVER_URL 未配置')
+    return root.replace(/:\d+$/, '')
+}
+
+function isSocketError(err: any): boolean {
+    const msg = (err?.message || err?.code || '').toString().toLowerCase()
+    return msg.includes('socket hang up') || msg.includes('econnreset') || msg.includes('econnrefused') || msg.includes('epipe')
+}
+
+function requestJSON(url: string, method: 'GET' | 'POST', body?: any, timeoutMs: number = DEFAULT_HTTP_TIMEOUT_MS, apiKey?: string): Promise<any> {
     return new Promise((resolve, reject) => {
         const protocol = url.startsWith('https') ? https : http
         const payload = body ? JSON.stringify(body) : undefined
 
-        const makeRequest = (retryCount: number = 0) => {
+        const makeRequest = (retryCount: number = 0, socketRetryCount: number = 0) => {
             const req = protocol.request(url, {
                 method,
                 timeout: timeoutMs,
                 headers: {
                     'Content-Type': 'application/json',
                     ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+                    ...(apiKey ? { 'X-API-Key': apiKey } : {}),
                 },
             }, (res) => {
                 let data = ''
@@ -64,10 +80,16 @@ function requestJSON(url: string, method: 'GET' | 'POST', body?: any, timeoutMs:
                     let parsed: any = data
                     try { parsed = data ? JSON.parse(data) : {} } catch { /* ignore */ }
 
+                    // 401 = API 密钥无效，立即返回明确错误
+                    if (status === 401) {
+                        reject(new Error('API 密钥无效或未配置，请在设置中检查 API 密钥'))
+                        return
+                    }
+
                     // 503 = 服务切换中，自动重试（最多等待 2 分钟）
                     if (status === 503 && retryCount < 12) {
                         console.log(`[cloudVoiceService] Service switching, retry in 10s... (${retryCount + 1}/12)`)
-                        setTimeout(() => makeRequest(retryCount + 1), 10000)
+                        setTimeout(() => makeRequest(retryCount + 1, socketRetryCount), 10000)
                         return
                     }
 
@@ -78,7 +100,15 @@ function requestJSON(url: string, method: 'GET' | 'POST', body?: any, timeoutMs:
             req.on('timeout', () => {
                 req.destroy(new Error('请求超时'))
             })
-            req.on('error', reject)
+            req.on('error', (err) => {
+                // Socket 错误自动重试（最多 3 次，每次等待 5 秒）
+                if (isSocketError(err) && socketRetryCount < 3) {
+                    console.log(`[cloudVoiceService] Socket error: ${err.message}, retry in 5s... (${socketRetryCount + 1}/3)`)
+                    setTimeout(() => makeRequest(retryCount, socketRetryCount + 1), 5000)
+                    return
+                }
+                reject(err)
+            })
             if (payload) req.write(payload)
             req.end()
         }
@@ -93,7 +123,9 @@ function requestMultipart(
     filePath: string,
     fields: Record<string, string>,
     timeoutMs: number = DEFAULT_DOWNLOAD_TIMEOUT_MS,
-    retryCount: number = 0
+    retryCount: number = 0,
+    socketRetryCount: number = 0,
+    apiKey?: string
 ): Promise<any> {
     // We avoid adding extra deps in src/services; build multipart by hand (small payloads only).
     return new Promise((resolve, reject) => {
@@ -127,6 +159,7 @@ function requestMultipart(
             headers: {
                 'Content-Type': `multipart/form-data; boundary=${boundary}`,
                 'Content-Length': body.length,
+                ...(apiKey ? { 'X-API-Key': apiKey } : {}),
             },
         }, (res) => {
             let data = ''
@@ -136,11 +169,17 @@ function requestMultipart(
                 let parsed: any = data
                 try { parsed = data ? JSON.parse(data) : {} } catch { /* ignore */ }
 
+                // 401 = API 密钥无效，立即返回明确错误
+                if (status === 401) {
+                    reject(new Error('API 密钥无效或未配置，请在设置中检查 API 密钥'))
+                    return
+                }
+
                 // 503 = 服务切换中，自动重试（最多等 2 分钟）
                 if (status === 503 && retryCount < 12) {
                     console.log(`[cloudVoiceService] Service switching (multipart), retry in 10s... (${retryCount + 1}/12)`)
                     setTimeout(() => {
-                        requestMultipart(url, fileField, filePath, fields, timeoutMs, retryCount + 1).then(resolve).catch(reject)
+                        requestMultipart(url, fileField, filePath, fields, timeoutMs, retryCount + 1, socketRetryCount, apiKey).then(resolve).catch(reject)
                     }, 10000)
                     return
                 }
@@ -152,7 +191,17 @@ function requestMultipart(
         req.on('timeout', () => {
             req.destroy(new Error('请求超时'))
         })
-        req.on('error', reject)
+        req.on('error', (err) => {
+            // Socket 错误自动重试（最多 3 次，每次等待 5 秒）
+            if (isSocketError(err) && socketRetryCount < 3) {
+                console.log(`[cloudVoiceService] Socket error (multipart): ${(err as any).message}, retry in 5s... (${socketRetryCount + 1}/3)`)
+                setTimeout(() => {
+                    requestMultipart(url, fileField, filePath, fields, timeoutMs, retryCount, socketRetryCount + 1, apiKey).then(resolve).catch(reject)
+                }, 5000)
+                return
+            }
+            reject(err)
+        })
         req.write(body)
         req.end()
     })
@@ -191,6 +240,11 @@ function resolveAudioUrl(cfg: CloudVoiceConfig, audioUrl: string): string {
 
     // Relative URL => same host
     if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+        // 部署形态差异：部分环境 /v1/tts 走 9999（调度器/代理），但音频文件实际由 9090（cosyvoice）提供；
+        // 若服务返回 /files/...，优先走 9090 下载，避免 9999 上 404。
+        if (trimmed.startsWith('/files/')) {
+            return `${serverRootUrl(cfg)}:${DEFAULT_CLOUD_VOICE_FILE_PORT}${trimmed}`
+        }
         return `${baseUrl(cfg)}${trimmed.startsWith('/') ? '' : '/'}${trimmed}`
     }
 
@@ -314,7 +368,7 @@ function buildAudioPathCandidates(serverPath: string): string[] {
 export async function checkCloudVoiceStatus(cfg: CloudVoiceConfig): Promise<{ online: boolean; message?: string }> {
     try {
         const url = `${baseUrl(cfg)}/health`
-        const res = await requestJSON(url, 'GET', undefined, 30_000)
+        const res = await requestJSON(url, 'GET', undefined, 30_000, cfg.apiKey)
         return { online: true, message: res?.message || 'ok' }
     } catch (e: any) {
         return { online: false, message: e.message }
@@ -323,7 +377,7 @@ export async function checkCloudVoiceStatus(cfg: CloudVoiceConfig): Promise<{ on
 
 export async function listVoiceModels(cfg: CloudVoiceConfig): Promise<CloudVoiceModel[]> {
     const url = `${baseUrl(cfg)}/v1/voices?device_id=${encodeURIComponent(cfg.deviceId)}`
-    const res = await requestJSON(url, 'GET')
+    const res = await requestJSON(url, 'GET', undefined, DEFAULT_HTTP_TIMEOUT_MS, cfg.apiKey)
     const items = res?.data || res?.voices || res
     if (!Array.isArray(items)) return []
     return items
@@ -334,7 +388,7 @@ export async function trainVoiceModel(cfg: CloudVoiceConfig, params: { name: str
     const res = await requestMultipart(url, 'audio', params.audioPath, {
         device_id: cfg.deviceId,
         name: params.name,
-    })
+    }, DEFAULT_DOWNLOAD_TIMEOUT_MS, 0, 0, cfg.apiKey)
     const voiceId = res?.data?.voiceId || res?.voiceId || res?.id
     if (!voiceId) throw new Error('训练接口未返回 voiceId')
     return { voiceId }
@@ -342,13 +396,19 @@ export async function trainVoiceModel(cfg: CloudVoiceConfig, params: { name: str
 
 export async function getVoiceModel(cfg: CloudVoiceConfig, voiceId: string): Promise<CloudVoiceModel> {
     const url = `${baseUrl(cfg)}/v1/voices/${encodeURIComponent(voiceId)}?device_id=${encodeURIComponent(cfg.deviceId)}`
-    const res = await requestJSON(url, 'GET')
+    const res = await requestJSON(url, 'GET', undefined, DEFAULT_HTTP_TIMEOUT_MS, cfg.apiKey)
     return res?.data || res
 }
 
 export async function synthesizeWithVoice(cfg: CloudVoiceConfig, params: { voiceId: string; text: string }): Promise<string> {
     const url = `${baseUrl(cfg)}/v1/tts`
-    const res = await requestJSON(url, 'POST', { device_id: cfg.deviceId, voice_id: params.voiceId, text: params.text })
+    const res = await requestJSON(
+        url,
+        'POST',
+        { device_id: cfg.deviceId, voice_id: params.voiceId, text: params.text },
+        DEFAULT_TTS_TIMEOUT_MS,
+        cfg.apiKey
+    )
 
     const audioUrl = res?.data?.audioUrl || res?.audioUrl || res?.audio_url
     if (!audioUrl) throw new Error('合成接口未返回音频地址')

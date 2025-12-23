@@ -343,23 +343,37 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     }
 
     const getCloudGpuRuntime = () => {
+        const runtime = readServerConfig()
         const serverUrlRaw = config.extra?.cloudGpuServerUrl || process.env.CLOUD_GPU_SERVER_URL || ''
         const portRaw = config.extra?.cloudGpuVideoPort || process.env.CLOUD_GPU_VIDEO_PORT || '8383'
+        // 9999 是调度器端口（/status、/preswitch），文件/生成服务默认是 8383。
+        // 为避免用户误把 9999 填到“视频端口”，这里做一次自愈修正。
+        const parsed = parseInt(portRaw, 10)
+        const videoPort = parsed === 9999 ? 8383 : parsed
         return {
             serverUrl: normalizeHttpUrl(serverUrlRaw),
-            videoPort: parseInt(portRaw, 10),
+            videoPort,
+            // server_config.json 显式配置优先（允许为空以覆盖 env），否则回退到 env
+            apiKey: (Object.prototype.hasOwnProperty.call(runtime, 'GPU_API_KEY')
+                ? (runtime.GPU_API_KEY || '')
+                : (process.env.GPU_API_KEY || '')).trim(),
         }
     }
 
     // ========== 系统配置 IPC ==========
     ipcMain.handle('config-get', async () => {
         const full = getConfig()
+        const runtime = readServerConfig()
+        const apiKeyRaw = Object.prototype.hasOwnProperty.call(runtime, 'GPU_API_KEY')
+            ? (runtime.GPU_API_KEY || '')
+            : (process.env.GPU_API_KEY || '')
         // 过滤掉敏感 Key，只向前端暴露可配置的 IP 和非敏感项
         return {
             success: true,
             data: {
                 CLOUD_GPU_SERVER_URL: full.extra?.cloudGpuServerUrl || '',
                 CLOUD_GPU_VIDEO_PORT: full.extra?.cloudGpuVideoPort || '8383',
+                GPU_API_KEY: apiKeyRaw.trim(),
                 CLOUD_VOICE_SERVER_URL: full.extra?.cloudVoiceServerUrl || '',
                 CLOUD_VOICE_PORT: full.extra?.cloudVoicePort || '9090',
                 COVER_PROVIDER: full.coverProvider,
@@ -490,15 +504,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                     }
                 }
 
-                const result = await new Promise<any>((resolve, reject) => {
+                const result = await new Promise<{ data: any; statusCode: number }>((resolve, reject) => {
                     if (debugScheduler) console.log('[Scheduler] Fetching:', `${schedulerUrl}/status`)
                     let didTimeout = false
+                    const { apiKey } = getCloudGpuRuntime()
                     const req = http.get(`${schedulerUrl}/status`, {
                         timeout: SCHEDULER_STATUS_TIMEOUT,
                         agent: schedulerHttpAgent,
                         headers: {
                             'User-Agent': 'ViralVideoAgent/1.0',
                             'Accept': 'application/json',
+                            ...(apiKey ? { 'X-API-Key': apiKey } : {}),
                         }
                     }, (res) => {
                         res.setEncoding('utf8')
@@ -506,14 +522,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                         res.on('data', chunk => data += chunk)
                         res.on('end', () => {
                             if (debugScheduler) console.log('[Scheduler] Got data:', data.substring(0, 200))
-                            if (res.statusCode && res.statusCode >= 400) {
-                                reject(new Error(`调度器返回错误: HTTP ${res.statusCode}`))
-                                return
-                            }
+                            const statusCode = res.statusCode || 0
                             try {
-                                resolve(JSON.parse(data))
+                                resolve({ data: JSON.parse(data), statusCode })
                             } catch {
-                                resolve(data)
+                                resolve({ data, statusCode })
                             }
                         })
                     })
@@ -532,10 +545,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                     })
                 })
 
+                if (result.statusCode === 401) {
+                    return {
+                        success: false,
+                        error: 'API 密钥无效或未配置，请先在「服务器设置」中填写正确的 GPU_API_KEY',
+                        data: { online: false, apiKeyError: true }
+                    }
+                }
+                if (result.statusCode >= 400) {
+                    const rawErr = (result.data as any)?.error
+                    throw new Error(rawErr ? String(rawErr) : `调度器返回错误: HTTP ${result.statusCode}`)
+                }
+
                 return {
                     success: true,
                     data: {
-                        ...result,
+                        ...(result.data || {}),
                         online: true,
                     }
                 }
@@ -565,7 +590,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 return { success: false, error: '无效的服务类型' }
             }
 
-            const result = await new Promise<any>((resolve, reject) => {
+            const result = await new Promise<{ data: any; statusCode: number }>((resolve, reject) => {
+                const { apiKey } = getCloudGpuRuntime()
                 const req = http.request(`${schedulerUrl}/preswitch/${service}`, {
                     method: 'POST',
                     timeout: 10000,
@@ -573,15 +599,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                     headers: {
                         'Content-Type': 'application/json',
                         'User-Agent': 'ViralVideoAgent/1.0',
+                        ...(apiKey ? { 'X-API-Key': apiKey } : {}),
                     },
                 }, (res) => {
                     let data = ''
                     res.on('data', chunk => data += chunk)
                     res.on('end', () => {
                         try {
-                            resolve(JSON.parse(data))
+                            resolve({ data: JSON.parse(data), statusCode: res.statusCode || 0 })
                         } catch {
-                            resolve(data)
+                            resolve({ data, statusCode: res.statusCode || 0 })
                         }
                     })
                 })
@@ -593,22 +620,86 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 req.end()
             })
 
-            return { success: true, data: result }
+            // 检查 HTTP 状态码
+            if (result.statusCode === 401) {
+                return { success: false, error: 'API 密钥无效，请在设置中检查密钥' }
+            }
+            if (result.statusCode >= 400) {
+                return { success: false, error: result.data?.error || `HTTP ${result.statusCode}` }
+            }
+
+            return { success: true, data: result.data }
         } catch (error: any) {
             return { success: false, error: error.message }
         }
     })
 
     // ========== 云端声音克隆（CosyVoice）==========
+    // ========== GPU API 密钥校验（不落盘）==========
+    ipcMain.handle('scheduler-validate-key', async (_event, apiKeyRaw: string) => {
+        try {
+            const schedulerUrl = getSchedulerUrl()
+            if (!schedulerUrl) {
+                return { success: false, error: '未配置 GPU 服务器地址，请先在「服务器设置」里填写服务器 IP/域名' }
+            }
+
+            const apiKey = (apiKeyRaw || '').trim()
+            if (!apiKey) return { success: false, error: 'API 密钥为空' }
+
+            const result = await new Promise<{ data: any; statusCode: number }>((resolve, reject) => {
+                const req = http.get(`${schedulerUrl}/status`, {
+                    timeout: SCHEDULER_STATUS_TIMEOUT,
+                    agent: schedulerHttpAgent,
+                    headers: {
+                        'User-Agent': 'ViralVideoAgent/1.0',
+                        'Accept': 'application/json',
+                        'X-API-Key': apiKey,
+                    }
+                }, (res) => {
+                    res.setEncoding('utf8')
+                    let data = ''
+                    res.on('data', chunk => data += chunk)
+                    res.on('end', () => {
+                        const statusCode = res.statusCode || 0
+                        try {
+                            resolve({ data: JSON.parse(data), statusCode })
+                        } catch {
+                            resolve({ data, statusCode })
+                        }
+                    })
+                })
+                req.on('timeout', () => {
+                    req.destroy()
+                    reject(new Error('验证请求超时'))
+                })
+                req.on('error', reject)
+            })
+
+            if (result.statusCode === 401) {
+                return { success: false, error: '密钥不正确，请检查 GPU_API_KEY 是否填写正确' }
+            }
+            if (result.statusCode >= 400) {
+                const rawErr = (result.data as any)?.error
+                return { success: false, error: rawErr ? String(rawErr) : `验证失败: HTTP ${result.statusCode}` }
+            }
+
+            return { success: true }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
+
     ipcMain.handle('cloud-voice-check-status', async () => {
         try {
             const { checkCloudVoiceStatus } = await import('../src/services/cloudVoiceService')
             const { serverUrl, port } = getCloudVoiceRuntime()
+            const { apiKey } = getCloudGpuRuntime()
             const status = await checkCloudVoiceStatus({
                 serverUrl,
                 port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
+                apiKey,
             })
             return { success: true, data: { ...status, endpoint: `${serverUrl}:${port}` } }
         } catch (error: any) {
@@ -620,11 +711,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         try {
             const { listVoiceModels } = await import('../src/services/cloudVoiceService')
             const { serverUrl, port } = getCloudVoiceRuntime()
+            const { apiKey } = getCloudGpuRuntime()
             const models = await listVoiceModels({
                 serverUrl,
                 port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
+                apiKey,
             })
             return { success: true, data: models }
         } catch (error: any) {
@@ -649,11 +742,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             fs.writeFileSync(tempAudioPath, Buffer.from(b64, 'base64'))
 
             const { serverUrl, port } = getCloudVoiceRuntime()
+            const { apiKey } = getCloudGpuRuntime()
             const { voiceId } = await trainVoiceModel({
                 serverUrl,
                 port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
+                apiKey,
             }, { name, audioPath: tempAudioPath })
 
             return { success: true, data: { voiceId } }
@@ -666,11 +761,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         try {
             const { getVoiceModel } = await import('../src/services/cloudVoiceService')
             const { serverUrl, port } = getCloudVoiceRuntime()
+            const { apiKey } = getCloudGpuRuntime()
             const model = await getVoiceModel({
                 serverUrl,
                 port,
                 deviceId,
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
+                apiKey,
             }, voiceId)
             return { success: true, data: model }
         } catch (error: any) {
@@ -687,7 +784,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             if (!voiceId) throw new Error('voiceId 为空')
 
             const { serverUrl, port } = getCloudVoiceRuntime()
-            const { serverUrl: cloudGpuServerUrl, videoPort: cloudGpuVideoPort } = getCloudGpuRuntime()
+            const { serverUrl: cloudGpuServerUrl, videoPort: cloudGpuVideoPort, apiKey } = getCloudGpuRuntime()
             const audioPath = await synthesizeWithVoice({
                 serverUrl,
                 port,
@@ -695,6 +792,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 localDataPath: path.join(app.getPath('userData'), 'cloud_voice_data'),
                 fallbackDownloadServerUrl: cloudGpuServerUrl,
                 fallbackDownloadPort: cloudGpuVideoPort,
+                apiKey,
             }, { voiceId, text })
 
             return { success: true, data: { audioPath } }

@@ -17,6 +17,7 @@ services:
       # pip 缓存加速（可选）
       - /root/.cache/pip:/root/.cache/pip
     environment:
+      - GPU_API_KEY=p7CENXBfckQsYV5rdwKRqaoTDP29ie3H
       - COSYVOICE_DIR=/root/viral-video-agent/scripts/deploy/cosyvoice
       - DUIX_DIR=/root/viral-video-agent/scripts/deploy/duix
       - COSYVOICE_URL=http://127.0.0.1:9090

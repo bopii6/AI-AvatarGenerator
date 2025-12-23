@@ -99,6 +99,33 @@ async function assertHasAudioStream(videoPath: string): Promise<void> {
     }
 }
 
+export async function replaceAudioTrack(
+    videoPath: string,
+    audioPath: string,
+    outputPath: string
+): Promise<string> {
+    const args = [
+        '-i', videoPath,
+        '-i', audioPath,
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-shortest',
+        '-y',
+        outputPath,
+    ]
+
+    const dir = path.dirname(outputPath)
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true })
+    }
+
+    await runFFmpeg(args)
+    return outputPath
+}
+
 export async function burnSubtitles(
     videoPath: string,
     subtitlePath: string,

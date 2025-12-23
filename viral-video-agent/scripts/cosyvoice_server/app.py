@@ -259,7 +259,8 @@ def tts(payload: Dict[str, Any]):
 
         with Path(prompt_path).open("rb") as f:
             files = {"prompt_wav": ("prompt.wav", f, "audio/wav")}
-            with requests.request("POST", url, data=data, files=files, stream=True, timeout=300) as resp:
+            # 增加超时到 480s 以支持长文本合成（约 400 字可能需要 3 分钟）
+            with requests.request("POST", url, data=data, files=files, stream=True, timeout=480) as resp:
                 if resp.status_code >= 400:
                     detail = f"engine error HTTP {resp.status_code}"
                     try:

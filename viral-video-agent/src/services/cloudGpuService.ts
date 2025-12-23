@@ -15,6 +15,7 @@ import https from 'https'
 import fs from 'fs'
 import path from 'path'
 import FormData from 'form-data'
+import { replaceAudioTrack } from './ffmpegService'
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = (() => {
     const raw = (process.env.CLOUD_GPU_DOWNLOAD_TIMEOUT_MS || '').trim()
@@ -436,6 +437,60 @@ function buildDownloadPathCandidates(serverPath: string): string[] {
     return uniqueStrings(candidates)
 }
 
+function looksLikeFilePath(value: unknown): value is string {
+    if (typeof value !== 'string') return false
+    const v = value.trim()
+    return v.length > 0 && /\.[a-z0-9]{2,6}$/i.test(v.split(/[?#]/)[0])
+}
+
+function parseDuixQueryResult(taskCode: string, queryResult: any): {
+    taskProgress?: number
+    taskStatus?: any
+    resultUrl?: string
+    errorMessage?: string
+} {
+    const normalizedCode = (taskCode || '').trim()
+
+    if (Array.isArray(queryResult)) {
+        const entry = queryResult.find((row: any) => Array.isArray(row) && String(row[0] || '').trim() === normalizedCode)
+            ?? queryResult.find((row: any) => Array.isArray(row) && row.length >= 2)
+
+        if (Array.isArray(entry)) {
+            const s = String(entry[1] ?? '').trim()
+            const v = entry[2]
+            const lower = s.toLowerCase()
+
+            if (['s', 'success', 'done', 'completed'].includes(lower)) {
+                const url = looksLikeFilePath(v) ? String(v) : `/${normalizedCode}-r.mp4`
+                return { taskStatus: s, resultUrl: url }
+            }
+
+            if (['f', 'fail', 'failed', 'error'].includes(lower)) {
+                return { taskStatus: s, errorMessage: typeof v === 'string' ? v : '视频合成失败' }
+            }
+
+            const numeric = typeof v === 'number' ? v : (typeof v === 'string' ? Number(v) : NaN)
+            if (!Number.isNaN(numeric)) {
+                const pct = numeric <= 1 ? numeric * 100 : numeric
+                return { taskStatus: s, taskProgress: Math.max(0, Math.min(100, pct)) }
+            }
+
+            return { taskStatus: s }
+        }
+    }
+
+    const payload = (queryResult && typeof queryResult === 'object' && queryResult.data && typeof queryResult.data === 'object')
+        ? queryResult.data
+        : queryResult
+
+    const taskProgress = payload?.progress ?? queryResult.progress
+    const taskStatus = payload?.status ?? queryResult.status
+    const resultUrl = payload?.result || payload?.video_url || payload?.output_url || queryResult.result || queryResult.video_url || queryResult.output_url
+    const errorMessage = payload?.msg || payload?.message || queryResult.msg || queryResult.message
+
+    return { taskProgress, taskStatus, resultUrl, errorMessage }
+}
+
 async function downloadFromDuixFileApi(
     cfg: CloudGpuConfig,
     serverPath: string,
@@ -701,15 +756,13 @@ export async function generateCloudVideo(
 
         // 检查完成状态
         // Duix Avatar 返回格式可能是 { code: 200, result: "视频路径" } 或 { status: "completed", video_url: "..." }
-        const payload = (queryResult && typeof queryResult === 'object' && queryResult.data && typeof queryResult.data === 'object')
-            ? queryResult.data
-            : queryResult
-        const taskProgress = payload?.progress ?? queryResult.progress
-        const taskStatus = payload?.status ?? queryResult.status
-        const resultUrl = payload?.result || payload?.video_url || payload?.output_url || queryResult.result || queryResult.video_url || queryResult.output_url
+        const parsed = parseDuixQueryResult(taskCode, queryResult)
+        const taskProgress = parsed.taskProgress
+        const taskStatus = parsed.taskStatus
+        const resultUrl = parsed.resultUrl
 
         if (resultUrl || taskStatus === 2 || taskProgress === 100) {
-            const videoUrl = resultUrl
+            const videoUrl = resultUrl || `/${taskCode}-r.mp4`
 
             if (videoUrl) {
                 onProgress?.(90, '视频合成完成，正在下载...')
@@ -753,14 +806,35 @@ export async function generateCloudVideo(
                     }
                 }
 
+                // 一些云端实现会返回“无声视频”（没有音轨或者音轨不可播放）；
+                // 为了确保用户拿到的视频一定有声音，这里用本地音频强制回填一次。
+                try {
+                    onProgress?.(98, '正在合并音频...')
+                    const muxedPath = outputPath.replace(/\.mp4$/i, '_with_audio.mp4')
+                    await replaceAudioTrack(outputPath, audioPath, muxedPath)
+                    try {
+                        fs.unlinkSync(outputPath)
+                    } catch {
+                        // ignore
+                    }
+                    fs.renameSync(muxedPath, outputPath)
+                } catch (e: any) {
+                    console.warn('合并音频失败，返回原视频:', e?.message || e)
+                }
+
                 onProgress?.(100, '完成！')
                 return outputPath
             }
         }
 
         // 检查失败状态
-        if (queryResult.code === -1 || queryResult.status === 'failed' || taskStatus === 3) {
-            throw new Error(queryResult.msg || queryResult.message || '视频合成失败')
+        if (
+            queryResult.code === -1 ||
+            queryResult.status === 'failed' ||
+            taskStatus === 3 ||
+            (typeof taskStatus === 'string' && ['f', 'fail', 'failed', 'error'].includes(taskStatus.toLowerCase()))
+        ) {
+            throw new Error(parsed.errorMessage || queryResult.msg || queryResult.message || '视频合成失败')
         }
 
         // 更新进度（估算）

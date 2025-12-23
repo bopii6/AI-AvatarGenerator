@@ -46,6 +46,15 @@ function AudioPanel() {
     const transcriptConfirmed = !needsTranscriptConfirm || digitalHumanScriptConfirmed
     const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
 
+    const generateDisabledReasons: string[] = []
+    if (digitalHumanGenerating) generateDisabledReasons.push('正在生成数字人视频中')
+    if (!textToSpeak) generateDisabledReasons.push('还没有逐字稿/文案内容')
+    if (!transcriptConfirmed) generateDisabledReasons.push('还没确认逐字稿用于出片')
+    if (schedulerStatus?.apiKeyError) generateDisabledReasons.push('API 密钥无效或未配置')
+    if (!cosyvoiceReady) generateDisabledReasons.push('云端声音服务未就绪（点“刷新模型列表”准备）')
+    if (!selectedCloudVoiceId) generateDisabledReasons.push('还没选择声音模型')
+    const isGenerateDisabled = generateDisabledReasons.length > 0
+
     // 读取用户选择的“克隆声音模型”
     useEffect(() => {
         try {
@@ -61,9 +70,11 @@ function AudioPanel() {
 
     useEffect(() => {
         if (digitalHumanGenerating) return
+        // 仅在服务已就绪时自动拉一次模型列表；不要因为进入页面而触发切换/等待
+        if (!cosyvoiceReady) return
         loadCloudModels()
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [digitalHumanGenerating])
+    }, [cosyvoiceReady, digitalHumanGenerating])
 
     const handleGenerate = async () => {
         if (!textToSpeak) return
@@ -77,6 +88,10 @@ function AudioPanel() {
         }
         if (!selectedCloudVoiceId) {
             message.warning('请先选择你的声音模型')
+            return
+        }
+        if (schedulerStatus?.apiKeyError) {
+            message.error('API 密钥无效或未配置：请先在右上角「设置」里填写正确的密钥')
             return
         }
         if (!cosyvoiceReady) {
@@ -107,7 +122,11 @@ function AudioPanel() {
                 setErrorText(msg)
                 message.info(msg)
             } else {
-                const msg = `生成失败：${error?.message || '未知错误'}`
+                const raw = (error?.message || '').toString()
+                const isTimeout = raw.includes('请求超时') || raw.toLowerCase().includes('timeout')
+                const msg = isTimeout
+                    ? '生成失败：请求超时。通常是云端语音合成耗时较长或网络抖动导致；请稍等 10-20 秒后重试，必要时把逐字稿分段（更短）再生成。'
+                    : `生成失败：${error?.message || '未知错误'}`
                 setErrorText(msg)
                 message.error(msg)
             }
@@ -139,6 +158,12 @@ function AudioPanel() {
         try {
             if (digitalHumanGenerating) {
                 message.warning('正在生成数字人视频，为避免云端服务切换导致失败，暂不加载云端模型列表')
+                return
+            }
+            if (schedulerStatus?.apiKeyError) {
+                setCloudModels([])
+                setSelectedCloudVoiceId('')
+                message.error('API 密钥无效或未配置：请先在右上角「设置」里填写正确的密钥')
                 return
             }
             if (!schedulerOnline) {
@@ -254,16 +279,25 @@ function AudioPanel() {
                     )}
                 </div>
 
-                <Button
-                    type="primary"
-                    icon={<SoundOutlined />}
-                    size="large"
-                    loading={loading}
-                    onClick={handleGenerate}
-                    disabled={digitalHumanGenerating || !textToSpeak || !transcriptConfirmed || !cosyvoiceReady || !selectedCloudVoiceId}
-                >
-                    生成音频
-                </Button>
+                <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                    <Button
+                        type="primary"
+                        icon={<SoundOutlined />}
+                        size="large"
+                        loading={loading}
+                        onClick={handleGenerate}
+                        disabled={isGenerateDisabled}
+                        block
+                        title={isGenerateDisabled ? generateDisabledReasons.join('；') : undefined}
+                    >
+                        生成音频
+                    </Button>
+                    {isGenerateDisabled && (
+                        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)' }}>
+                            为什么点不了：{generateDisabledReasons.join('；')}
+                        </div>
+                    )}
+                </Space>
 
                 {loading && (
                     <div style={{ textAlign: 'center', padding: 24 }}>

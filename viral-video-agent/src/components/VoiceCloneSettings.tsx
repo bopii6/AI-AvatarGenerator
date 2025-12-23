@@ -113,6 +113,10 @@ export default function VoiceCloneSettings() {
             message.warning('正在生成数字人视频，为避免云端切换导致失败，请等待完成后再切换服务')
             return
         }
+        if (schedulerStatus?.apiKeyError) {
+            message.error('API 密钥无效或未配置：请先在右上角「设置」里填写正确的密钥')
+            return
+        }
         if (!schedulerOnline) {
             message.warning('调度器未连接，请先到「服务器设置」检查地址/网络')
             return

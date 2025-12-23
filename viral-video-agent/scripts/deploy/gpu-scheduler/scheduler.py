@@ -36,6 +36,15 @@ GPU_RELEASE_SLEEP = int(os.environ.get('GPU_RELEASE_SLEEP', '5'))
 COSYVOICE_CONTAINERS = [s.strip() for s in os.environ.get('COSYVOICE_CONTAINERS', 'cosyvoice-api,cosyvoice-engine').split(',') if s.strip()]
 DUIX_CONTAINERS = [s.strip() for s in os.environ.get('DUIX_CONTAINERS', 'duix-avatar-gen-video,duix-file-api,duix-proxy').split(',') if s.strip()]
 
+# CosyVoice Engine 健康检查：默认通过容器 IP 检测（避免未映射 50000 导致“永远不就绪”）
+COSYVOICE_ENGINE_CONTAINER = os.environ.get('COSYVOICE_ENGINE_CONTAINER', 'cosyvoice-engine').strip()
+COSYVOICE_ENGINE_PORT = int(os.environ.get('COSYVOICE_ENGINE_PORT', '50000'))
+COSYVOICE_ENGINE_HEALTH_PATH = (os.environ.get('COSYVOICE_ENGINE_HEALTH_PATH', '/health') or '/health').strip() or '/health'
+COSYVOICE_ENGINE_HEALTH_URL = os.environ.get('COSYVOICE_ENGINE_HEALTH_URL', '').strip()
+
+# API 密钥保护（可选，未配置则不验证）
+GPU_API_KEY = os.environ.get('GPU_API_KEY', '').strip()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -61,6 +70,17 @@ class GPUScheduler:
         self.switching_target: ServiceType = None
         # Connect to host Docker via mounted socket; avoids slow docker-compose installation in this container.
         self.docker = docker.from_env()
+        
+        # Prefer legacy docker-compose for older Docker; fall back to docker compose plugin if present.
+        if shutil.which('docker-compose'):
+            self.compose_cmd = ['docker-compose']
+        elif shutil.which('docker'):
+            self.compose_cmd = ['docker', 'compose']
+        else:
+            self.compose_cmd = ['docker-compose']
+        
+        # 初始化时强制只保留一个服务运行，防止 GPU 显存溢出
+        self._ensure_single_service_on_startup()
 
         # Prefer legacy docker-compose for older Docker; fall back to docker compose plugin if present.
         if shutil.which('docker-compose'):
@@ -130,23 +150,49 @@ class GPUScheduler:
         return ok
     
     def _wait_for_service(self, service: ServiceType, timeout: int = 60) -> bool:
-        """等待服务就绪"""
+        """等待服务就绪（包括引擎完全初始化）"""
         url = COSYVOICE_URL if service == 'cosyvoice' else DUIX_URL
         health_endpoint = f"{url}/health" if service == 'cosyvoice' else f"{url}/easy/query?code=health_check"
         
+        # CosyVoice 需要同时检查 API 和 Engine
+        if service == 'cosyvoice':
+            engine_health = self._get_cosyvoice_engine_health_url()
+        else:
+            engine_health = None
+        
         start = time.time()
+        api_ready = False
+        engine_ready = False if engine_health else True
+        
         while time.time() - start < timeout:
             try:
                 with httpx.Client(timeout=5) as client:
-                    resp = client.get(health_endpoint)
-                    if resp.status_code < 500:
-                        logger.info(f"Service {service} is ready")
+                    # 检查 API
+                    if not api_ready:
+                        resp = client.get(health_endpoint)
+                        if resp.status_code < 500:
+                            api_ready = True
+                            logger.info(f"Service {service} API is ready")
+                    
+                    # 检查 Engine（仅 CosyVoice）
+                    if engine_health and not engine_ready:
+                        try:
+                            resp = client.get(engine_health)
+                            if resp.status_code < 500:
+                                engine_ready = True
+                                logger.info(f"Service {service} Engine is ready")
+                        except Exception:
+                            pass  # Engine 还在启动
+                    
+                    # 两个都就绪了
+                    if api_ready and engine_ready:
+                        logger.info(f"Service {service} is fully ready")
                         return True
             except Exception:
                 pass
             time.sleep(2)
         
-        logger.warning(f"Service {service} not ready after {timeout}s")
+        logger.warning(f"Service {service} not ready after {timeout}s (api={api_ready}, engine={engine_ready})")
         return False
     
     def switch_to_service(self, target: ServiceType) -> bool:
@@ -206,18 +252,84 @@ class GPUScheduler:
         return int(remaining)
     
     def _check_service_health(self, service: ServiceType) -> bool:
-        """检查服务健康状态（快速检测，不等待）"""
+        """检查服务健康状态（包括 Engine，快速检测，不等待）"""
         if service is None:
             return False
         url = COSYVOICE_URL if service == 'cosyvoice' else DUIX_URL
         health_endpoint = f"{url}/health" if service == 'cosyvoice' else f"{url}/easy/query?code=health_check"
+        
         try:
             with httpx.Client(timeout=3) as client:
                 resp = client.get(health_endpoint)
-                return resp.status_code < 500
+                if resp.status_code >= 500:
+                    return False
+                
+                # CosyVoice 还需要检查 Engine
+                if service == 'cosyvoice':
+                    try:
+                        engine_resp = client.get(self._get_cosyvoice_engine_health_url())
+                        if engine_resp.status_code >= 500:
+                            return False
+                    except Exception:
+                        return False  # Engine 不可用
+                
+                return True
         except Exception:
             return False
 
+    def _get_container_ip(self, name: str) -> Optional[str]:
+        try:
+            c = self.docker.containers.get(name)
+        except Exception:
+            return None
+        try:
+            c.reload()
+            nets = (c.attrs or {}).get('NetworkSettings', {}).get('Networks', {}) or {}
+            for _net_name, net in nets.items():
+                ip = (net or {}).get('IPAddress')
+                if ip:
+                    return ip
+        except Exception:
+            return None
+        return None
+
+    def _get_cosyvoice_engine_health_url(self) -> str:
+        if COSYVOICE_ENGINE_HEALTH_URL:
+            return COSYVOICE_ENGINE_HEALTH_URL
+        ip = self._get_container_ip(COSYVOICE_ENGINE_CONTAINER)
+        if ip:
+            return f"http://{ip}:{COSYVOICE_ENGINE_PORT}{COSYVOICE_ENGINE_HEALTH_PATH}"
+        return f"http://127.0.0.1:{COSYVOICE_ENGINE_PORT}{COSYVOICE_ENGINE_HEALTH_PATH}"
+
+    def _ensure_single_service_on_startup(self):
+        """启动时确保只有一个 GPU 服务在运行，防止显存溢出"""
+        logger.info("Checking for conflicting GPU services on startup...")
+        cosyvoice_running = self._check_service_health('cosyvoice')
+        duix_running = self._check_service_health('duix')
+        
+        if cosyvoice_running and duix_running:
+            logger.warning("Both services running! Stopping Duix to free GPU memory...")
+            self._stop_containers(DUIX_CONTAINERS)
+            time.sleep(GPU_RELEASE_SLEEP)  # 等待显存释放
+            self.current_service = 'cosyvoice'
+            logger.info("Duix stopped, GPU memory freed. Current service: cosyvoice")
+        elif cosyvoice_running:
+            self.current_service = 'cosyvoice'
+            logger.info("Detected running service: cosyvoice")
+        elif duix_running:
+            self.current_service = 'duix'
+            logger.info("Detected running service: duix")
+        else:
+            logger.info("No GPU service currently running")
+
+        # 默认启动 CosyVoice：让“音频/克隆”开箱即用，避免用户首次操作被迫等待
+        if self.current_service != 'cosyvoice':
+            logger.info("Ensuring default service on startup: cosyvoice")
+            try:
+                threading.Thread(target=lambda: self.switch_to_service('cosyvoice'), daemon=True).start()
+            except Exception as e:
+                logger.warning(f"Failed to start cosyvoice on startup: {e}")
+    
     def get_status(self) -> dict:
         """获取调度器状态（增强版）"""
         return {
@@ -247,9 +359,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# API 密钥验证中间件
+@app.middleware("http")
+async def verify_api_key(request: Request, call_next):
+    # 健康检查接口不需要验证（供服务监控/负载均衡使用）
+    if request.url.path in ['/health']:
+        return await call_next(request)
+    
+    # 如果未配置密钥，跳过验证
+    if not GPU_API_KEY:
+        return await call_next(request)
+    
+    # 验证请求头中的 API 密钥
+    api_key = request.headers.get('X-API-Key', '')
+    if api_key != GPU_API_KEY:
+        logger.warning(f"Invalid API key from {request.client.host}: {api_key[:8]}..." if api_key else f"Missing API key from {request.client.host}")
+        return JSONResponse({"error": "Invalid or missing API key"}, status_code=401)
+    
+    return await call_next(request)
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "scheduler": scheduler.get_status()}
+    return {"status": "ok"}
 
 @app.get("/status")
 async def status():
@@ -329,7 +460,7 @@ async def proxy_cosyvoice(path: str, request: Request):
     # 转发请求
     url = f"{COSYVOICE_URL}/v1/{path}"
     
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=600) as client:  # 增加超时以支持长文本 TTS
         try:
             body = await request.body()
             resp = await client.request(
@@ -400,7 +531,7 @@ async def proxy_duix(path: str, request: Request):
     # 转发请求
     url = f"{DUIX_URL}/easy/{path}"
     
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=600) as client:  # 增加超时以支持长时间操作
         try:
             body = await request.body()
             resp = await client.request(
