@@ -63,6 +63,9 @@ function hasBundledFFmpeg() {
     try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         var ffmpegPath = require('ffmpeg-static');
+        if (ffmpegPath.includes('app.asar') && !ffmpegPath.includes('app.asar.unpacked')) {
+            ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+        }
         return typeof ffmpegPath === 'string' && fs.existsSync(ffmpegPath);
     }
     catch (_a) {
@@ -72,13 +75,14 @@ function hasBundledFFmpeg() {
 /**
  * 检查系统是否已准备好
  */
-export function checkSystemReady(config) {
+export function checkSystemReady(config, options) {
     return __awaiter(this, void 0, void 0, function () {
-        var modelsDownloaded, pythonInstalled, ffmpegInstalled;
+        var checkpoint, modelsDownloaded, pythonInstalled, ffmpegInstalled;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
-                    modelsDownloaded = checkModelsExist(config.modelsDir);
+                    checkpoint = (options === null || options === void 0 ? void 0 : options.qualityPreset) === 'quality' ? 'wav2lip_gan' : 'wav2lip';
+                    modelsDownloaded = checkModelsExist(config.modelsDir, { checkpoint: checkpoint });
                     return [4 /*yield*/, checkPython(config.pythonPath)];
                 case 1:
                     pythonInstalled = _a.sent();
@@ -96,9 +100,9 @@ export function checkSystemReady(config) {
 /**
  * 初始化系统（下载模型）
  */
-export function initializeSystem(config, onProgress) {
+export function initializeSystem(config, onProgress, options) {
     return __awaiter(this, void 0, void 0, function () {
-        var _i, _a, dir;
+        var _i, _a, dir, checkpoint;
         return __generator(this, function (_b) {
             switch (_b.label) {
                 case 0:
@@ -107,8 +111,9 @@ export function initializeSystem(config, onProgress) {
                         if (!fs.existsSync(dir))
                             fs.mkdirSync(dir, { recursive: true });
                     }
-                    if (!!checkModelsExist(config.modelsDir)) return [3 /*break*/, 2];
-                    return [4 /*yield*/, downloadModels(config.modelsDir, onProgress)];
+                    checkpoint = (options === null || options === void 0 ? void 0 : options.qualityPreset) === 'quality' ? 'wav2lip_gan' : 'wav2lip';
+                    if (!!checkModelsExist(config.modelsDir, { checkpoint: checkpoint })) return [3 /*break*/, 2];
+                    return [4 /*yield*/, downloadModels(config.modelsDir, onProgress, { checkpoint: checkpoint })];
                 case 1:
                     _b.sent();
                     return [2 /*return*/];
@@ -152,6 +157,7 @@ export function generateVideo(config, options, onProgress) {
                         modelsDir: config.modelsDir,
                         tempDir: config.tempDir,
                         pythonPath: config.pythonPath,
+                        qualityPreset: options.qualityPreset,
                     };
                     return [4 /*yield*/, runLipSync(lipSyncConfig, options.sourceVideoPath, options.audioPath, outputPath, onProgress)];
                 case 1:

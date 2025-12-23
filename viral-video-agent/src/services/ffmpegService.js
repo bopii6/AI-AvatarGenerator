@@ -49,11 +49,24 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
+};
 import { spawn } from 'child_process';
+import path from 'path';
 import fs from 'fs';
 // 使用 ffmpeg-static 获取 FFmpeg 可执行文件路径
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 var ffmpegPath = require('ffmpeg-static');
+if (ffmpegPath.includes('app.asar') && !ffmpegPath.includes('app.asar.unpacked')) {
+    ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+}
 var defaultSubtitleStyle = {
     fontName: 'Microsoft YaHei',
     fontSize: 24,
@@ -80,7 +93,9 @@ function runFFmpeg(args) {
                 resolve();
             }
             else {
-                reject(new Error("FFmpeg failed with code ".concat(code, ": ").concat(stderr)));
+                // Keep error payload small to avoid noisy IPC/console output
+                var trimmed = stderr.length > 4000 ? stderr.slice(-4000) : stderr;
+                reject(new Error("FFmpeg failed with code ".concat(code, ": ").concat(trimmed)));
             }
         });
         ffmpeg.on('error', reject);
@@ -89,14 +104,98 @@ function runFFmpeg(args) {
 /**
  * 在视频上烧录字幕
  */
+function parseDurationFromFfmpegStderr(stderr) {
+    var durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
+    if (!durationMatch)
+        return null;
+    var hours = parseInt(durationMatch[1], 10);
+    var minutes = parseInt(durationMatch[2], 10);
+    var seconds = parseInt(durationMatch[3], 10);
+    var ms = parseInt(durationMatch[4], 10) / 100;
+    return hours * 3600 + minutes * 60 + seconds + ms;
+}
+function getMediaInfoStderr(mediaPath) {
+    return __awaiter(this, void 0, void 0, function () {
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, new Promise(function (resolve, reject) {
+                        // `ffmpeg -i <file>` will exit non-zero because no output is specified; stderr contains stream info.
+                        var ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-i', mediaPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+                        var stderr = '';
+                        ffmpeg.stderr.on('data', function (data) {
+                            stderr += data.toString();
+                        });
+                        ffmpeg.on('close', function () { return resolve(stderr); });
+                        ffmpeg.on('error', reject);
+                    })];
+                case 1: return [2 /*return*/, _a.sent()];
+            }
+        });
+    });
+}
+function assertHasAudioStream(videoPath) {
+    return __awaiter(this, void 0, void 0, function () {
+        var stderr, hasAudio;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, getMediaInfoStderr(videoPath)
+                    // Typical lines look like: "Stream #0:1: Audio: aac ..."
+                ];
+                case 1:
+                    stderr = _a.sent();
+                    hasAudio = /Stream\s+#\d+:\d+.*Audio:/i.test(stderr) || /Audio:/i.test(stderr);
+                    if (!hasAudio) {
+                        throw new Error('未检测到音频轨道：原视频可能是静音/无声视频，无法进行语音转文字');
+                    }
+                    return [2 /*return*/];
+            }
+        });
+    });
+}
+export function replaceAudioTrack(videoPath, audioPath, outputPath) {
+    return __awaiter(this, void 0, void 0, function () {
+        var args, dir;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    args = [
+                        '-i', videoPath,
+                        '-i', audioPath,
+                        '-map', '0:v:0',
+                        '-map', '1:a:0',
+                        '-c:v', 'copy',
+                        '-c:a', 'aac',
+                        '-b:a', '192k',
+                        '-shortest',
+                        '-y',
+                        outputPath,
+                    ];
+                    dir = path.dirname(outputPath);
+                    if (!fs.existsSync(dir)) {
+                        fs.mkdirSync(dir, { recursive: true });
+                    }
+                    return [4 /*yield*/, runFFmpeg(args)];
+                case 1:
+                    _a.sent();
+                    return [2 /*return*/, outputPath];
+            }
+        });
+    });
+}
 export function burnSubtitles(videoPath, subtitlePath, outputPath, style) {
     return __awaiter(this, void 0, void 0, function () {
-        var s, subtitleFilter, args;
+        var s, escapeFilterValue, subtitleFilter, args, dir;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
                     s = __assign(__assign({}, defaultSubtitleStyle), style);
-                    subtitleFilter = "subtitles='".concat(subtitlePath.replace(/\\/g, '/'), "':force_style='FontName=").concat(s.fontName, ",FontSize=").concat(s.fontSize, ",PrimaryColour=&H").concat(s.fontColor, "&,OutlineColour=&H").concat(s.outlineColor, "&,Outline=").concat(s.outlineWidth, ",MarginV=").concat(s.marginBottom, ",Alignment=").concat(s.alignment, "'");
+                    escapeFilterValue = function (value) {
+                        return value
+                            .replace(/\\/g, '/')
+                            .replace(/:/g, '\\:')
+                            .replace(/'/g, "\\'");
+                    };
+                    subtitleFilter = "subtitles='".concat(escapeFilterValue(subtitlePath), "':force_style='FontName=").concat(s.fontName, ",FontSize=").concat(s.fontSize, ",PrimaryColour=&H").concat(s.fontColor, "&,OutlineColour=&H").concat(s.outlineColor, "&,Outline=").concat(s.outlineWidth, ",MarginV=").concat(s.marginBottom, ",Alignment=").concat(s.alignment, "'");
                     args = [
                         '-i', videoPath,
                         '-vf', subtitleFilter,
@@ -104,6 +203,10 @@ export function burnSubtitles(videoPath, subtitlePath, outputPath, style) {
                         '-y',
                         outputPath,
                     ];
+                    dir = path.dirname(outputPath);
+                    if (!fs.existsSync(dir)) {
+                        fs.mkdirSync(dir, { recursive: true });
+                    }
                     return [4 /*yield*/, runFFmpeg(args)];
                 case 1:
                     _a.sent();
@@ -147,21 +250,24 @@ export function addBackgroundMusic(videoPath, bgmPath, outputPath, options) {
  * 从视频中提取音频
  */
 export function extractAudio(videoPath_1, outputPath_1) {
-    return __awaiter(this, arguments, void 0, function (videoPath, outputPath, format) {
+    return __awaiter(this, arguments, void 0, function (videoPath, outputPath, format, options) {
         var args;
         if (format === void 0) { format = 'mp3'; }
         return __generator(this, function (_a) {
             switch (_a.label) {
-                case 0:
-                    args = [
+                case 0: return [4 /*yield*/, assertHasAudioStream(videoPath)];
+                case 1:
+                    _a.sent();
+                    args = __spreadArray(__spreadArray(__spreadArray([
                         '-i', videoPath,
                         '-vn',
-                        '-acodec', format === 'mp3' ? 'libmp3lame' : 'pcm_s16le',
+                        '-acodec', format === 'mp3' ? 'libmp3lame' : 'pcm_s16le'
+                    ], ((options === null || options === void 0 ? void 0 : options.sampleRate) ? ['-ar', String(options.sampleRate)] : []), true), ((options === null || options === void 0 ? void 0 : options.channels) ? ['-ac', String(options.channels)] : []), true), [
                         '-y',
                         outputPath,
-                    ];
+                    ], false);
                     return [4 /*yield*/, runFFmpeg(args)];
-                case 1:
+                case 2:
                     _a.sent();
                     return [2 /*return*/, outputPath];
             }
@@ -171,6 +277,31 @@ export function extractAudio(videoPath_1, outputPath_1) {
 /**
  * 截取视频帧作为封面
  */
+export function sliceAudio(inputPath_1, outputPath_1, startTimeInSeconds_1, durationInSeconds_1) {
+    return __awaiter(this, arguments, void 0, function (inputPath, outputPath, startTimeInSeconds, durationInSeconds, format, options) {
+        var args;
+        if (format === void 0) { format = 'mp3'; }
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    args = __spreadArray(__spreadArray(__spreadArray([
+                        '-i', inputPath,
+                        '-ss', String(startTimeInSeconds),
+                        '-t', String(durationInSeconds),
+                        '-vn',
+                        '-acodec', format === 'mp3' ? 'libmp3lame' : 'pcm_s16le'
+                    ], ((options === null || options === void 0 ? void 0 : options.sampleRate) ? ['-ar', String(options.sampleRate)] : []), true), ((options === null || options === void 0 ? void 0 : options.channels) ? ['-ac', String(options.channels)] : []), true), [
+                        '-y',
+                        outputPath,
+                    ], false);
+                    return [4 /*yield*/, runFFmpeg(args)];
+                case 1:
+                    _a.sent();
+                    return [2 /*return*/, outputPath];
+            }
+        });
+    });
+}
 export function captureFrame(videoPath_1, outputPath_1) {
     return __awaiter(this, arguments, void 0, function (videoPath, outputPath, timeInSeconds) {
         var args;
@@ -232,6 +363,27 @@ export function getVideoDuration(videoPath) {
 /**
  * 生成 SRT 字幕文件
  */
+export function getMediaDuration(mediaPath) {
+    return __awaiter(this, void 0, void 0, function () {
+        return __generator(this, function (_a) {
+            return [2 /*return*/, new Promise(function (resolve, reject) {
+                    var ffmpeg = spawn(ffmpegPath, ['-i', mediaPath, '-f', 'null', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+                    var stderr = '';
+                    ffmpeg.stderr.on('data', function (data) {
+                        stderr += data.toString();
+                    });
+                    ffmpeg.on('close', function () {
+                        var duration = parseDurationFromFfmpegStderr(stderr);
+                        if (duration != null)
+                            resolve(duration);
+                        else
+                            reject(new Error('Failed to parse media duration'));
+                    });
+                    ffmpeg.on('error', reject);
+                })];
+        });
+    });
+}
 export function generateSrtFile(segments, outputPath) {
     var srtContent = segments.map(function (seg, index) {
         var formatTime = function (seconds) {

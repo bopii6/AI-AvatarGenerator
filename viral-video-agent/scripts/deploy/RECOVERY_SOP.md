@@ -1,8 +1,11 @@
 # GPU 服务器被回收后的“快速恢复”清单（小白版）
 
-你现在的云端架构只固定对外 2 个端口：
+你现在的云端架构只固定对外 1 个端口：
 - 数字人（Duix）：`8383`
-- 声音克隆（CosyVoice 网关）：`9090`
+
+声音克隆/配音走阿里云 DashScope CosyVoice API（无需在 GPU 服务器部署语音服务/网关）。
+
+> 本文档历史版本包含 CosyVoice 网关（9090）相关内容，当前方案已废弃，可忽略所有 9090/CosyVoice 部分。
 
 服务器被回收后，你要做的就是：**买一台新 GPU 服务器 → 装好 Docker+GPU 运行时 → 把服务用 compose 拉起来 → 桌面端把 IP 换成新服务器 IP**。
 
@@ -15,7 +18,6 @@
   - `scripts/deploy/`
   - `scripts/duix_file_api.py`
   - `scripts/duix_nginx_proxy.conf`
-  - `scripts/cosyvoice_server/`
 
 建议你把压缩包命名成：`deploy_bundle.zip`（我们已经在仓库根目录生成过的话，就直接用它）
 
@@ -34,7 +36,6 @@ Compress-Archive -Path scripts -DestinationPath deploy_bundle.zip -Force
 
 放通入站：
 - `8383/tcp`
-- `9090/tcp`
 
 （这一步只在云控制台操作，不用进服务器）
 
@@ -153,8 +154,8 @@ curl http://127.0.0.1:9090/health
 CLOUD_GPU_SERVER_URL=http://<新GPU服务器公网IP>
 CLOUD_GPU_VIDEO_PORT=8383
 
-CLOUD_VOICE_SERVER_URL=http://<新GPU服务器公网IP>
-CLOUD_VOICE_PORT=9090
+ALIYUN_DASHSCOPE_API_KEY=
+ALIYUN_COSYVOICE_MODEL=cosyvoice-v3-flash
 ```
 
 改完重启桌面端即可。
@@ -165,7 +166,6 @@ CLOUD_VOICE_PORT=9090
 在服务器本机执行：
 ```bash
 curl "http://127.0.0.1:8383/easy/query?code=test"
-curl "http://127.0.0.1:9090/health"
 ```
 
 ---

@@ -20,3 +20,7 @@ export declare function generateTitles(config: HunyuanConfig, content: string, c
  * 生成热门话题标签
  */
 export declare function generateHashtags(config: HunyuanConfig, content: string, count?: number): Promise<string[]>;
+/**
+ * 分析文案的爆款规律
+ */
+export declare function analyzeCopyPattern(config: HunyuanConfig, copies: string): Promise<string>;

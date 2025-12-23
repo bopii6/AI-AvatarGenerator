@@ -8,10 +8,24 @@ export interface DownloadResult {
     title?: string;
     error?: string;
 }
+export interface ProfileVideo {
+    id: string;
+    url: string;
+    title: string;
+    cover?: string;
+}
 /**
  * 关闭浏览器
  */
 export declare function closeBrowser(): Promise<void>;
+/**
+ * 抓取博主主页最近的视频列表
+ */
+export declare function fetchProfileVideos(profileUrl: string, count?: number): Promise<ProfileVideo[]>;
+/**
+ * 判断是否为主页链接
+ */
+export declare function isProfileUrl(url: string): boolean;
 /**
  * 从分享链接获取视频信息
  */

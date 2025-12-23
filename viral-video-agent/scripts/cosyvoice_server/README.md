@@ -1,6 +1,8 @@
-# CosyVoice 云端 API（给桌面端用）
+# CosyVoice 云端 API（已废弃）
 
-这是一个 **API 网关**，用于把你部署在 GPU 云端的开源 CosyVoice（FunAudioLLM/CosyVoice）通过 HTTP 暴露出来，供桌面端调用。
+当前桌面端已统一使用阿里云 DashScope CosyVoice API（`ALIYUN_DASHSCOPE_API_KEY`），不再支持自建 CosyVoice 网关。
+
+以下内容仅供历史参考。
 
 桌面端已按 `scripts/cosyvoice_cloud_api.md` 的接口对接：
 

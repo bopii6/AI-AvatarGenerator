@@ -2,18 +2,16 @@
 
 ## 0. 你需要准备什么
 - 云端数字人服务（Duix）：对外端口 `8383`
-- 云端声音克隆网关（CosyVoice API）：对外端口 `9090`
-- 桌面端 `.env` 里配置好云端公网 IP
-
-> 如果你只有单卡 8GB（如 Tesla P4），建议部署 `scripts/deploy/gpu-scheduler`，并把桌面端端口统一改为 `9999`（Duix/CosyVoice 不需要同时常驻显存）。
+- 阿里云 DashScope API Key（CosyVoice-v3）
+- 桌面端 `.env` 里配置好云端公网 IP + DashScope Key
 
 桌面端 `.env` 示例：
 ```env
 CLOUD_GPU_SERVER_URL=http://<GPU服务器公网IP>
 CLOUD_GPU_VIDEO_PORT=8383
 
-CLOUD_VOICE_SERVER_URL=http://<GPU服务器公网IP>
-CLOUD_VOICE_PORT=9090
+ALIYUN_DASHSCOPE_API_KEY=
+ALIYUN_COSYVOICE_MODEL=cosyvoice-v3-flash
 ```
 
 云端部署参考：
@@ -26,11 +24,11 @@ CLOUD_VOICE_PORT=9090
 1) 打开桌面端 → 右上角「设置」
 2) 进入「声音克隆」
 3) 点击「开始录音」并连续说话 30–90 秒 → 点击「停止录音」
-4) 填一个名称 → 点「开始训练」
+4) 填一个名称 → 点「创建音色」
 5) 等状态变成 `ready`（训练完成后会出现在列表）
 
 提示：
-- 如果提示“云端声音服务未连接”，先检查 `.env` 的 `CLOUD_VOICE_SERVER_URL` / `CLOUD_VOICE_PORT`，以及云服务器安全组是否放通 `9090`。
+- 如果提示“DashScope 未连接”，先在「设置 → 语音 API」中填入 `ALIYUN_DASHSCOPE_API_KEY` 并保存验证。
 
 ---
 
@@ -72,5 +70,6 @@ CLOUD_VOICE_PORT=9090
 - 已生成音频
 - 云端 Duix 服务在线（8383 可访问）
 
-### 5.2 第一次 CosyVoice 很慢
-首次需要下载几 GB 模型文件，属于正常现象；下载完成后会稳定很多。
+### 5.2 声音克隆/配音失败
+- 确认已配置并验证 `ALIYUN_DASHSCOPE_API_KEY`
+- 确认 DashScope 账户余额/配额正常

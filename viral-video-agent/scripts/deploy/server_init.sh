@@ -2,7 +2,7 @@
 # ========================================
 # GPU 服务器一键部署脚本
 # 适用于：腾讯云 Ubuntu 22.04 / CentOS 8+
-# 功能：部署 Duix + CosyVoice 数字人服务
+# 功能：部署 Duix 数字人服务
 # ========================================
 
 set -e
@@ -142,10 +142,7 @@ setup_project() {
     log_info "创建项目目录..."
     
     PROJECT_DIR="/root/viral-video-agent"
-    mkdir -p $PROJECT_DIR/scripts/deploy/cosyvoice
     mkdir -p $PROJECT_DIR/scripts/deploy/duix
-    mkdir -p $PROJECT_DIR/scripts/cosyvoice_server
-    mkdir -p $PROJECT_DIR/scripts/cosyvoice_engine_patch
     
     log_info "项目目录: $PROJECT_DIR"
 }
@@ -181,7 +178,7 @@ show_next_steps() {
     echo ""
     echo "📋 下一步操作:"
     echo ""
-    echo "1️⃣  在腾讯云安全组放开端口: 22, 8383, 9090"
+    echo "1️⃣  在腾讯云安全组放开端口: 22, 8383"
     echo ""
     echo "2️⃣  设置 root 密码 (用于 SSH 登录):"
     echo "    echo 'root:你的密码' | chpasswd"
@@ -193,13 +190,10 @@ show_next_steps() {
     echo "    cd /root/viral-video-agent/scripts/deploy/duix"
     echo "    docker compose up -d"
     echo ""
-    echo "5️⃣  启动 CosyVoice 服务:"
-    echo "    cd /root/viral-video-agent/scripts/deploy/cosyvoice"
-    echo "    docker compose up -d --build"
-    echo ""
-    echo "6️⃣  更新桌面端 .env 配置:"
+    echo "5️⃣  更新桌面端 .env 配置:"
     echo "    CLOUD_GPU_SERVER_URL=http://$PUBLIC_IP"
-    echo "    CLOUD_VOICE_SERVER_URL=http://$PUBLIC_IP"
+    echo "    ALIYUN_DASHSCOPE_API_KEY=..."
+    echo "    ALIYUN_COSYVOICE_MODEL=cosyvoice-v3-flash"
     echo ""
     echo "=========================================="
 }

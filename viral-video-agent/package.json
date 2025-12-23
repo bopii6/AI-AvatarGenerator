@@ -7,7 +7,8 @@
     "dev:clean": "node scripts/clean.js",
     "dev": "npm run dev:clean && npm run electron:dev",
     "electron:dev": "cross-env NODE_ENV=development node scripts/build-electron.js && concurrently \"cross-env NODE_ENV=development vite --config vite.config.ts\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
-    "electron:build": "node scripts/build-electron.js && vite build --config vite.config.ts && electron-builder"
+    "electron:build": "node scripts/build-electron.js && vite build --config vite.config.ts && electron-builder",
+    "postinstall": "node scripts/postinstall.js"
   },
   "keywords": [
     "electron",
@@ -19,8 +20,10 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@types/ws": "^8.18.1",
     "antd": "^5.0.0",
     "concurrently": "^8.0.0",
+    "cos-nodejs-sdk-v5": "^2.15.4",
     "cross-env": "^7.0.3",
     "dotenv": "^17.2.3",
     "ffmpeg-static": "^5.3.0",
@@ -29,6 +32,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "uuid": "^13.0.0",
+    "ws": "^8.18.3",
     "zustand": "^4.0.0"
   },
   "devDependencies": {

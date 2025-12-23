@@ -13,6 +13,7 @@ export interface GenerationOptions {
     sourceVideoPath: string;
     audioPath: string;
     text?: string;
+    qualityPreset?: 'quality' | 'fast';
 }
 export interface GenerationResult {
     videoPath: string;
@@ -26,7 +27,9 @@ export declare function getDefaultConfig(appDataPath: string): DigitalHumanConfi
 /**
  * 检查系统是否已准备好
  */
-export declare function checkSystemReady(config: DigitalHumanConfig): Promise<{
+export declare function checkSystemReady(config: DigitalHumanConfig, options?: {
+    qualityPreset?: 'quality' | 'fast';
+}): Promise<{
     ready: boolean;
     modelsDownloaded: boolean;
     pythonInstalled: boolean;
@@ -35,7 +38,9 @@ export declare function checkSystemReady(config: DigitalHumanConfig): Promise<{
 /**
  * 初始化系统（下载模型）
  */
-export declare function initializeSystem(config: DigitalHumanConfig, onProgress?: (progress: LipSyncProgress) => void): Promise<void>;
+export declare function initializeSystem(config: DigitalHumanConfig, onProgress?: (progress: LipSyncProgress) => void, options?: {
+    qualityPreset?: 'quality' | 'fast';
+}): Promise<void>;
 /**
  * 生成数字人视频
  */

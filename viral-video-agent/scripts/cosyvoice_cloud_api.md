@@ -1,12 +1,12 @@
-# CosyVoice 云端声音克隆：API 约定（桌面端对接）
+# CosyVoice 云端声音克隆：API 约定（已废弃）
 
-你选择用自建开源 CosyVoice，桌面端已按如下 HTTP API 约定对接。
+当前桌面端已统一使用阿里云 DashScope CosyVoice API（`ALIYUN_DASHSCOPE_API_KEY`），不再支持自建 CosyVoice 网关。
 
 > 说明：当前不做登录，桌面端会生成一个本地 `device_id`，所有模型按 `device_id` 进行隔离。
 
-## 环境变量（桌面端）
+## 旧环境变量（仅供历史参考）
 
-- `CLOUD_VOICE_SERVER_URL=http://<你的云服务器IP>`
+- `CLOUD_VOICE_SERVER_URL=...`
 - `CLOUD_VOICE_PORT=9090`
 
 ## 必须实现的接口
@@ -96,4 +96,3 @@
 - 训练 UI：`src/components/VoiceCloneSettings.tsx`
 - 音频生成使用：`src/components/panels/AudioPanel.tsx`
 - 一键追爆就绪条件：`src/App.tsx`（需要“有人像 + 有 ready 的声音模型”）
-

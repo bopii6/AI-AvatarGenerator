@@ -25,8 +25,7 @@ import {
 } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
-import { useGpuScheduler } from '../../contexts/GpuSchedulerContext'
-import GpuServiceStatus from '../GpuServiceStatus'
+import CloudServiceStatus from '../CloudServiceStatus'
 
 interface AvatarModel {
     id: string
@@ -136,9 +135,6 @@ function DigitalHumanPanel() {
         setActiveKey,
     } = useAppStore()
 
-    const { status: schedulerStatus, isRunning: isServiceRunning, preswitch } = useGpuScheduler()
-    const schedulerOnline = !!schedulerStatus?.online
-
     // 状态
     const [avatars, setAvatars] = useState<AvatarModel[]>([])
     const [selectedAvatarId, setSelectedAvatarId] = useState<string>('')
@@ -197,7 +193,6 @@ function DigitalHumanPanel() {
     const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
     const hasText = textToSpeak.length > 0
     const readyForVideo = transcriptConfirmed && hasAudio
-    const preferredService: 'duix' | 'cosyvoice' = readyForVideo ? 'duix' : 'cosyvoice'
 
     useEffect(() => {
         if (transcriptCandidates.length === 0) return
@@ -224,46 +219,23 @@ function DigitalHumanPanel() {
         transcriptCandidates,
     ])
 
-    const ensureDuixReady = useCallback(async (): Promise<boolean> => {
-        if (schedulerStatus?.apiKeyError) {
-            message.error('API 密钥无效或未配置：请先在右上角「设置」里填写正确的密钥')
-            return false
-        }
-        if (!schedulerOnline) {
-            message.warning('调度器未连接，请先检查服务器设置')
+    const ensureCloudGpuReady = useCallback(async (): Promise<boolean> => {
+        if (!window.electronAPI?.invoke) {
+            message.error('桌面端接口未就绪，请重启应用')
             return false
         }
 
-        // 如果正在切换到其它服务，直接提示，避免用户被迫等待
-        if (schedulerStatus?.switching && schedulerStatus.switchingTarget && schedulerStatus.switchingTarget !== 'duix') {
-            message.info('云端服务正在切换中，请稍候...')
+        const res = await window.electronAPI.invoke('cloud-gpu-check-status')
+        if (!res?.success) {
+            message.warning(res?.error || '无法检测数字人服务')
             return false
         }
-
-        if (!isServiceRunning('duix')) {
-            const res = await preswitch('duix')
-            if (!res?.success) {
-                message.warning(res?.message || '切换数字人服务失败')
-                return false
-            }
+        if (!res?.data?.online) {
+            message.warning(res?.data?.message || '数字人服务未连接，请先检查服务器设置')
+            return false
         }
-
-        // 等待服务就绪（仅在用户明确触发需要数字人的动作时才等）
-        const startedAt = Date.now()
-        const timeoutMs = 120_000
-        while (Date.now() - startedAt < timeoutMs) {
-            const res = await window.electronAPI?.invoke('scheduler-get-status')
-            const data = res?.data
-            if (res?.success && data?.online) {
-                const ready = !data.switching && data.current_service === 'duix' && data.services_health?.duix === true
-                if (ready) return true
-            }
-            await new Promise<void>((resolve) => window.setTimeout(resolve, 1500))
-        }
-
-        message.error('云端服务准备超时，请稍后再试')
-        return false
-    }, [isServiceRunning, preswitch, schedulerOnline, schedulerStatus?.apiKeyError, schedulerStatus?.switching, schedulerStatus?.switchingTarget])
+        return true
+    }, [])
 
     const loadAvatars = useCallback(async () => {
         try {
@@ -284,14 +256,14 @@ function DigitalHumanPanel() {
         if (avatarsLoading) return
         setAvatarsLoading(true)
         try {
-            const ready = await ensureDuixReady()
+            const ready = await ensureCloudGpuReady()
             if (!ready) return
             await loadAvatars()
             setAvatarsLoaded(true)
         } finally {
             setAvatarsLoading(false)
         }
-    }, [avatarsLoading, ensureDuixReady, loadAvatars])
+    }, [avatarsLoading, ensureCloudGpuReady, loadAvatars])
 
     const handleSaveNewAvatar = async () => {
         if (!newAvatarFile || !newAvatarName.trim()) {
@@ -301,7 +273,7 @@ function DigitalHumanPanel() {
 
         setIsSavingAvatar(true)
         try {
-            const ready = await ensureDuixReady()
+            const ready = await ensureCloudGpuReady()
             if (!ready) return
 
             const base64Data = await fileToBase64(newAvatarFile)
@@ -329,7 +301,7 @@ function DigitalHumanPanel() {
 
     const handleDeleteAvatar = async (avatarId: string) => {
         try {
-            const ready = await ensureDuixReady()
+            const ready = await ensureCloudGpuReady()
             if (!ready) return
 
             await window.electronAPI?.invoke('cloud-gpu-delete-avatar', avatarId)
@@ -342,64 +314,6 @@ function DigitalHumanPanel() {
             message.error(e.message)
         }
     }
-
-    const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
-
-    const waitForServiceReady = useCallback(async (service: 'cosyvoice' | 'duix', timeoutMs: number = 120_000) => {
-        const startedAt = Date.now()
-
-        while (Date.now() - startedAt < timeoutMs) {
-            const res = await window.electronAPI?.invoke('scheduler-get-status')
-            const data = res?.data
-
-            if (res?.success && data?.online) {
-                const isReadyNow = !data.switching
-                    && data.current_service === service
-                    && data.services_health?.[service] === true
-
-                if (isReadyNow) return
-            }
-
-            await sleep(1500)
-        }
-
-        throw new Error('云端服务准备超时，请稍后再试')
-    }, [])
-
-    const ensureCloudService = useCallback(async (service: 'cosyvoice' | 'duix', label: string) => {
-        if (!window.electronAPI?.invoke) {
-            throw new Error('桌面端接口未就绪，请重启应用')
-        }
-
-        const statusRes = await window.electronAPI.invoke('scheduler-get-status')
-        const data = statusRes?.data
-
-        if (!statusRes?.success || !data?.online) {
-            throw new Error(statusRes?.error || '调度器未连接，请先检查服务器设置')
-        }
-
-        if (data.switching) {
-            if (data.switching_target === service) {
-                await waitForServiceReady(service)
-                return
-            }
-            throw new Error('云端服务正在切换中，请稍候再试')
-        }
-
-        if (data.current_service === service && data.services_health?.[service] === true) {
-            return
-        }
-
-        const preswitchRes = await preswitch(service)
-        if (!preswitchRes?.success) {
-            throw new Error(preswitchRes?.message || `切换${label}服务失败`)
-        }
-        if (preswitchRes.noSwitchNeeded) {
-            return
-        }
-
-        await waitForServiceReady(service)
-    }, [preswitch, waitForServiceReady])
 
     const generateVideo = useCallback(async (params: { avatarVideoPath: string; audioPath: string }) => {
         const result = await window.electronAPI?.invoke('cloud-gpu-generate-video', params)
@@ -435,7 +349,8 @@ function DigitalHumanPanel() {
         setDigitalHumanProgress(0, '准备数字人服务...')
 
         try {
-            await ensureCloudService('duix', '数字人')
+            const ready = await ensureCloudGpuReady()
+            if (!ready) return
 
             setDigitalHumanProgress(5, '正在提交视频任务...')
             await generateVideo({
@@ -444,8 +359,6 @@ function DigitalHumanPanel() {
             })
             setDigitalHumanProgress(100, '生成完成')
             message.success('视频生成成功！')
-            // 后台切回声音服务：避免用户下一步做音频/克隆时再次等待
-            void preswitch('cosyvoice')
         } catch (e: any) {
             message.error(e.message)
         } finally {
@@ -493,13 +406,13 @@ function DigitalHumanPanel() {
                             WebkitTextFillColor: 'transparent',
                             marginBottom: 6,
                         }}>
-                            ✨ 口播数字人分身
+                            🎬 口播数字人分身
                         </div>
                         <Typography.Text type="secondary" style={{ fontSize: 14 }}>
                             确认逐字稿 → 准备音频 → 一键生成口播视频
                         </Typography.Text>
                     </div>
-                    <GpuServiceStatus requiredService={preferredService} />
+                    <CloudServiceStatus kind="gpu" />
                 </div>
             </div>
 
@@ -560,7 +473,7 @@ function DigitalHumanPanel() {
                             克隆音色
                         </Typography.Title>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            先在这里准备语音，再进入数字人阶段，可避免 GPU 来回切换
+                            先确认逐字稿并生成音频，再回到这里生成数字人视频
                         </Typography.Text>
                     </div>
                             {/* 第一步：逐字稿（先确认内容） */}
@@ -777,7 +690,7 @@ function DigitalHumanPanel() {
                             数字人合成
                         </Typography.Title>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            音色就绪后在此挑选形象并生成视频，减少重复等待
+                            音频就绪后在此挑选形象并生成视频
                         </Typography.Text>
                     </div>
                             {/* 第一步：选择形象 */}
@@ -798,7 +711,7 @@ function DigitalHumanPanel() {
                                             </Typography.Text>
                                         </div>
                                         <Space>
-                                            <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频，避免服务来回切换' : '首次加载可能需要 30-120 秒'}>
+                                            <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频' : '首次加载可能需要一点时间'}>
                                                 <span>
                                                     <Button
                                                         icon={<ReloadOutlined />}
@@ -814,7 +727,7 @@ function DigitalHumanPanel() {
                                                 </span>
                                             </Tooltip>
 
-                                            <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频，避免服务来回切换' : undefined}>
+                                            <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频' : undefined}>
                                                 <span>
                                                     <Button
                                                         type="primary"
@@ -843,14 +756,14 @@ function DigitalHumanPanel() {
                                                 <div>
                                                     <div style={{ marginBottom: 8 }}>先完成左侧步骤</div>
                                                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                                        确认逐字稿并准备好音频后，点击右上角「加载形象」即可切换到数字人服务并加载列表。
+                                                        确认逐字稿并准备好音频后，点击右上角「加载形象」即可加载列表。
                                                     </Typography.Text>
                                                 </div>
                                             ) : avatarsLoading ? (
                                                 <div>
-                                                    <div style={{ marginBottom: 8 }}>正在准备数字人服务并加载形象…</div>
+                                                    <div style={{ marginBottom: 8 }}>正在加载形象…</div>
                                                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                                        首次切换通常需要 30-120 秒；如长时间无响应，可点击右上角「设置」检查服务器或密钥。
+                                                        首次加载可能需要一点时间；如长时间无响应，可点击右上角「设置」检查服务器配置。
                                                     </Typography.Text>
                                                 </div>
                                             ) : !avatarsLoaded ? (
@@ -1008,18 +921,18 @@ function DigitalHumanPanel() {
                                     icon={<RocketOutlined />}
                                     onClick={handleGenerate}
                                     loading={digitalHumanGenerating}
-                                    disabled={!hasAvatar || !hasAudio || !schedulerOnline || !transcriptConfirmed}
+                                    disabled={!hasAvatar || !hasAudio || !transcriptConfirmed}
                                     block
                                     style={{
                                         height: 52,
                                         borderRadius: 12,
                                         fontSize: 16,
                                         fontWeight: 600,
-                                        background: (hasAvatar && hasAudio && schedulerOnline)
+                                        background: (hasAvatar && hasAudio)
                                             ? 'linear-gradient(135deg, #1677ff, #722ed1)'
                                             : undefined,
                                         border: 'none',
-                                        boxShadow: (hasAvatar && hasAudio && schedulerOnline)
+                                        boxShadow: (hasAvatar && hasAudio)
                                             ? '0 8px 24px rgba(22,119,255,0.3)'
                                             : undefined,
                                     }}
@@ -1074,28 +987,7 @@ function DigitalHumanPanel() {
                                     </div>
                                 )}
 
-                                {!schedulerOnline && (
-                                    <div style={{
-                                        marginTop: 12,
-                                        padding: 10,
-                                        borderRadius: 8,
-                                        background: 'rgba(255,77,79,0.1)',
-                                        border: '1px solid rgba(255,77,79,0.2)',
-                                        display: 'flex',
-                                        alignItems: 'flex-start',
-                                        gap: 8
-                                    }}>
-                                        <span style={{ fontSize: 16 }}>⚠️</span>
-                                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                            <Typography.Text type="danger" style={{ fontWeight: 600, fontSize: 13 }}>
-                                                调度器未连接
-                                            </Typography.Text>
-                                            <Typography.Text type="danger" style={{ fontSize: 12, opacity: 0.85 }}>
-                                                {schedulerStatus?.error || '无法连接调度器服务，请检查服务器配置与网络'}
-                                            </Typography.Text>
-                                        </div>
-                                    </div>
-                                )}
+
                             </Card>
                 </div>
             </div>

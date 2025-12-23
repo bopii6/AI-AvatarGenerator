@@ -20,12 +20,12 @@ const keysToInject = [
     'TENCENT_SECRET_KEY',
     'ALIYUN_ACCESS_KEY_ID',
     'ALIYUN_ACCESS_KEY_SECRET',
+    'ALIYUN_DASHSCOPE_API_KEY',
+    'ALIYUN_COSYVOICE_MODEL',
     'COVER_PROVIDER',
     'COVER_TENCENT_REGION',
     'CLOUD_GPU_SERVER_URL',
     'CLOUD_GPU_VIDEO_PORT',
-    'CLOUD_VOICE_SERVER_URL',
-    'CLOUD_VOICE_PORT',
     'DIGITAL_HUMAN_API_URL',
     'DIGITAL_HUMAN_PYTHON'
 ]
@@ -44,7 +44,7 @@ async function build() {
             platform: 'node',
             target: 'node16',
             outfile: path.join(__dirname, '../dist-electron/main.js'),
-            external: ['electron', 'ffmpeg-static', 'playwright', 'canvas'],
+            external: ['electron', 'ffmpeg-static', 'playwright', 'canvas', 'cos-nodejs-sdk-v5'],
             loader: {
                 '.ts': 'ts',
             },

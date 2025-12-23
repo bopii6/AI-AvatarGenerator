@@ -13,20 +13,26 @@ export interface LipSyncConfig {
     tempDir: string;
     ffmpegPath?: string;
     pythonPath?: string;
+    qualityPreset?: 'quality' | 'fast';
 }
 export interface LipSyncProgress {
     stage: 'downloading' | 'extracting' | 'processing' | 'synthesizing' | 'complete';
     progress: number;
     message: string;
 }
+export type Wav2LipCheckpoint = 'wav2lip' | 'wav2lip_gan';
 /**
  * 检查模型是否已下载
  */
-export declare function checkModelsExist(modelsDir: string): boolean;
+export declare function checkModelsExist(modelsDir: string, options?: {
+    checkpoint?: Wav2LipCheckpoint;
+}): boolean;
 /**
  * 下载模型文件
  */
-export declare function downloadModels(modelsDir: string, onProgress?: (progress: LipSyncProgress) => void): Promise<void>;
+export declare function downloadModels(modelsDir: string, onProgress?: (progress: LipSyncProgress) => void, options?: {
+    checkpoint?: Wav2LipCheckpoint;
+}): Promise<void>;
 /**
  * 使用 Python 运行 Wav2Lip（CPU 可跑）
  */

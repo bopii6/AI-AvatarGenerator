@@ -2,6 +2,7 @@
  * 一键追爆流水线服务
  * 串联所有模块，实现全自动化流程
  */
+import { CoverProvider } from './coverService';
 export interface PipelineConfig {
     tencent: {
         secretId: string;
@@ -11,11 +12,18 @@ export interface PipelineConfig {
         accessKeyId: string;
         accessKeySecret: string;
     };
+    coverProvider: CoverProvider;
     digitalHuman: {
         apiUrl: string;
         apiKey?: string;
     };
     outputDir: string;
+    extra?: {
+        cloudGpuServerUrl?: string;
+        cloudGpuVideoPort?: string;
+        cloudVoiceServerUrl?: string;
+        cloudVoicePort?: string;
+    };
 }
 export interface PipelineResult {
     videoPath: string;

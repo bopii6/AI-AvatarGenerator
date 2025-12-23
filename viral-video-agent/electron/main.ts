@@ -72,7 +72,6 @@ function appendNoProxyHost(rawUrl: string | undefined) {
 appendNoProxyHost('localhost')
 appendNoProxyHost('127.0.0.1')
 appendNoProxyHost(process.env.CLOUD_GPU_SERVER_URL)
-appendNoProxyHost(process.env.CLOUD_VOICE_SERVER_URL)
 
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { registerIpcHandlers } from './ipcHandlers'

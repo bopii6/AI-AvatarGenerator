@@ -239,16 +239,17 @@ export function transcribeAudio(config, audioUrl, onProgress) {
  */
 export function recognizeSentence(config, audioBase64, options) {
     return __awaiter(this, void 0, void 0, function () {
-        var params, response;
+        var audioBuffer, params, response;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
+                    audioBuffer = Buffer.from(audioBase64, 'base64');
                     params = {
                         EngSerViceType: (options === null || options === void 0 ? void 0 : options.engineType) || '16k_zh', // 引擎服务类型
                         SourceType: 1, // Base64方式
                         VoiceFormat: 'mp3',
                         Data: audioBase64,
-                        DataLen: audioBase64.length,
+                        DataLen: audioBuffer.length,
                     };
                     return [4 /*yield*/, callAsrApi(config, 'SentenceRecognition', params)];
                 case 1:

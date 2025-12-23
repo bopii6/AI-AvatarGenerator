@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     // 封面生成
     generateCover: function (prompt) { return ipcRenderer.invoke('generate-cover', prompt); },
+    generateSubtitleFile: function (params) {
+        return ipcRenderer.invoke('generate-subtitle-file', params);
+    },
+    getVideoDuration: function (videoPath) { return ipcRenderer.invoke('get-video-duration', videoPath); },
     // 标题生成
     generateTitle: function (content) { return ipcRenderer.invoke('generate-title', content); },
     // 事件监听

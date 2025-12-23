@@ -1,15 +1,13 @@
 import { Form, Input, Button, Card, Space, Divider, Typography, message } from 'antd'
-import { DatabaseOutlined, ApartmentOutlined, SaveOutlined } from '@ant-design/icons'
+import { DatabaseOutlined, SaveOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
-import { useGpuScheduler } from '../contexts/GpuSchedulerContext'
 
 const { Title, Text } = Typography
 
-function ServerSettings() {
+export default function ServerSettings() {
     const [form] = Form.useForm()
     const [loading, setLoading] = useState(false)
     const [currentEnv, setCurrentEnv] = useState('')
-    const { clearPendingSwitch, refresh } = useGpuScheduler()
 
     useEffect(() => {
         const fetchConfig = async () => {
@@ -32,9 +30,6 @@ function ServerSettings() {
             const res = await window.electronAPI?.invoke('config-update', values)
             if (res?.success) {
                 message.success('服务器设置已保存，即时生效！')
-                // 配置更改后清除切换状态并刷新
-                clearPendingSwitch()
-                setTimeout(() => refresh(), 500)
             } else {
                 throw new Error(res?.error || '保存失败')
             }
@@ -50,7 +45,7 @@ function ServerSettings() {
             <div style={{ marginBottom: 24 }}>
                 <Title level={5}>后端服务器配置</Title>
                 <Text type="secondary">
-                    这里仅修改服务器地址与端口；云端访问密钥请到「授权/密钥」单独配置。
+                    这里只配置数字人 GPU 服务器地址和端口；语音克隆走阿里云 DashScope API，无需再部署语音服务或调度器。
                 </Text>
             </div>
 
@@ -60,12 +55,13 @@ function ServerSettings() {
                 onFinish={onFinish}
                 initialValues={{
                     CLOUD_GPU_VIDEO_PORT: '8383',
-                    CLOUD_VOICE_PORT: '9090'
+                    TENCENT_COS_VOICE_PREFIX: 'voice-samples/',
+                    TENCENT_COS_SIGNED_URL_EXPIRES_SECONDS: '3600',
                 }}
             >
                 <Card
                     size="small"
-                    title={<Space><DatabaseOutlined /> GPU 算力服务器 (DUIX/HeyGem)</Space>}
+                    title={<Space><DatabaseOutlined /> GPU 算力服务器（数字人）</Space>}
                     style={{ marginBottom: 16, borderRadius: 8, border: '1px solid var(--border)' }}
                 >
                     <Space style={{ width: '100%' }} align="start">
@@ -73,7 +69,7 @@ function ServerSettings() {
                             label="服务器地址"
                             name="CLOUD_GPU_SERVER_URL"
                             rules={[{ required: true, message: '请输入服务器 IP 或域名' }]}
-                            style={{ flex: 1, minWidth: 300 }}
+                            style={{ flex: 1, minWidth: 320 }}
                             extra="示例: http://111.229.185.xxx"
                         >
                             <Input placeholder="http://1.2.3.4" />
@@ -82,7 +78,7 @@ function ServerSettings() {
                             label="端口"
                             name="CLOUD_GPU_VIDEO_PORT"
                             rules={[{ required: true, message: '端口' }]}
-                            style={{ width: 80 }}
+                            style={{ width: 100 }}
                         >
                             <Input placeholder="8383" />
                         </Form.Item>
@@ -91,26 +87,74 @@ function ServerSettings() {
 
                 <Card
                     size="small"
-                    title={<Space><ApartmentOutlined /> 语音服务器 (CosyVoice)</Space>}
-                    style={{ marginBottom: 24, borderRadius: 8, border: '1px solid var(--border)' }}
+                    title={<Space><DatabaseOutlined /> 语音样本存储（推荐：腾讯云 COS）</Space>}
+                    style={{ marginBottom: 16, borderRadius: 8, border: '1px solid var(--border)' }}
                 >
+                    <Text type="secondary">
+                        DashScope CosyVoice 声音克隆要求“录音样本”必须是公网可访问的 URL。
+                        最简单稳定的方式是上传到 COS（私有读也支持预签名 URL）。
+                    </Text>
+                    <div style={{ height: 12 }} />
+                    <Space style={{ width: '100%' }} align="start" wrap>
+                        <Form.Item
+                            label="COS Bucket"
+                            name="TENCENT_COS_BUCKET"
+                            style={{ minWidth: 320, flex: 1 }}
+                            extra="示例: cosyvoice-backup-1370883689"
+                        >
+                            <Input placeholder="bucket-name-appid" />
+                        </Form.Item>
+                        <Form.Item
+                            label="COS Region"
+                            name="TENCENT_COS_REGION"
+                            style={{ width: 220 }}
+                            extra="示例: ap-shanghai"
+                        >
+                            <Input placeholder="ap-shanghai" />
+                        </Form.Item>
+                        <Form.Item
+                            label="对象前缀"
+                            name="TENCENT_COS_VOICE_PREFIX"
+                            style={{ minWidth: 320, flex: 1 }}
+                            extra="默认: voice-samples/（将按日期/设备分层）"
+                        >
+                            <Input placeholder="voice-samples/" />
+                        </Form.Item>
+                        <Form.Item
+                            label="预签名有效期(秒)"
+                            name="TENCENT_COS_SIGNED_URL_EXPIRES_SECONDS"
+                            style={{ width: 220 }}
+                            extra="默认 3600"
+                        >
+                            <Input placeholder="3600" />
+                        </Form.Item>
+                    </Space>
+                </Card>
+
+                <Card
+                    size="small"
+                    title={<Space><DatabaseOutlined /> 语音样本上传服务（兜底，可选）</Space>}
+                    style={{ marginBottom: 16, borderRadius: 8, border: '1px solid var(--border)' }}
+                >
+                    <Text type="secondary">
+                        若你不使用 COS，也可以配置一个公网上传服务（提供 /upload 并返回 {'{ url }'}）。未填写时会兜底复用 GPU 服务器地址。
+                    </Text>
+                    <div style={{ height: 12 }} />
                     <Space style={{ width: '100%' }} align="start">
                         <Form.Item
-                            label="服务器地址"
-                            name="CLOUD_VOICE_SERVER_URL"
-                            rules={[{ required: true, message: '请输入语音服务器 IP 或域名' }]}
-                            style={{ flex: 1, minWidth: 400 }}
-                            extra="示例: http://111.229.185.xxx"
+                            label="上传服务地址"
+                            name="VOICE_AUDIO_UPLOAD_SERVER_URL"
+                            style={{ flex: 1, minWidth: 320 }}
+                            extra="示例: http://111.229.185.xxx（需提供 /upload 接口并返回 { url }）"
                         >
                             <Input placeholder="http://1.2.3.4" />
                         </Form.Item>
                         <Form.Item
                             label="端口"
-                            name="CLOUD_VOICE_PORT"
-                            rules={[{ required: true, message: '端口' }]}
+                            name="VOICE_AUDIO_UPLOAD_PORT"
                             style={{ width: 100 }}
                         >
-                            <Input placeholder="9090" />
+                            <Input placeholder="8383" />
                         </Form.Item>
                     </Space>
                 </Card>
@@ -131,10 +175,8 @@ function ServerSettings() {
 
             <Divider />
             <Text type="secondary" style={{ fontSize: 12 }}>
-                调试信息：当前环境基准路径 [{currentEnv}]
+                调试信息：当前环境基准路径[{currentEnv}]
             </Text>
         </div>
     )
 }
-
-export default ServerSettings

@@ -52,7 +52,7 @@ import { generateCover } from './coverService';
  */
 export function runPipeline(config, douyinUrl, options, onProgress) {
     return __awaiter(this, void 0, void 0, function () {
-        var outputDir, tempDir, tencentConfig, downloadResult, originalVideoPath, audioPath, transcription, originalCopy, rewrittenCopy, speechPath, digitalHumanConfig, digitalHumanResult, digitalHumanVideoPath, sentences, avgDuration_1, subtitleSegments, srtPath, videoWithSubtitle, finalVideoPath, coverPath, covers, e_1, titles, hashtags;
+        var outputDir, tempDir, tencentConfig, downloadResult, originalVideoPath, audioPath, transcription, originalCopy, rewrittenCopy, speechPath, digitalHumanConfig, digitalHumanResult, digitalHumanVideoPath, sentences, avgDuration_1, subtitleSegments, srtPath, videoWithSubtitle, finalVideoPath, coverPath, coverConfig, covers, e_1, titles, hashtags;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -160,7 +160,15 @@ export function runPipeline(config, douyinUrl, options, onProgress) {
                     _a.label = 12;
                 case 12:
                     _a.trys.push([12, 14, , 16]);
-                    return [4 /*yield*/, generateCover(config.aliyun, rewrittenCopy.slice(0, 100), // 使用文案前100字作为提示
+                    coverConfig = {
+                        provider: config.coverProvider,
+                        aliyun: config.aliyun,
+                        tencent: {
+                            secretId: config.tencent.secretId,
+                            secretKey: config.tencent.secretKey,
+                        },
+                    };
+                    return [4 /*yield*/, generateCover(coverConfig, rewrittenCopy.slice(0, 100), // 使用文案前100字作为提示
                         outputDir)];
                 case 13:
                     covers = _a.sent();

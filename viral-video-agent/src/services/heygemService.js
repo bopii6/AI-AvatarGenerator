@@ -56,7 +56,7 @@ import http from 'http';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import { randomBytes, randomUUID } from 'crypto';
 var defaultConfig = {
     baseUrl: 'http://127.0.0.1',
     audioPort: 18180,
@@ -434,4 +434,13 @@ export function textToDigitalHumanVideo(config, model, text, outputDir, onProgre
             }
         });
     });
+}
+function uuidv4() {
+    if (typeof randomUUID === 'function')
+        return randomUUID();
+    var bytes = randomBytes(16);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    var hex = bytes.toString('hex');
+    return "".concat(hex.slice(0, 8), "-").concat(hex.slice(8, 12), "-").concat(hex.slice(12, 16), "-").concat(hex.slice(16, 20), "-").concat(hex.slice(20));
 }

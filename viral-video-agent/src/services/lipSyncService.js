@@ -55,6 +55,15 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
+};
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
@@ -63,12 +72,17 @@ import http from 'http';
 // Wav2Lip 模型下载地址（使用 hf-mirror.com 镜像）
 var WAV2LIP_MODELS = {
     wav2lip: {
-        url: 'https://hf-mirror.com/camenduru/wav2lip/resolve/main/wav2lip.pth',
+        url: 'https://hf-mirror.com/camenduru/wav2lip/resolve/main/checkpoints/wav2lip.pth',
         filename: 'wav2lip.pth',
         size: '435MB',
     },
+    wav2lip_gan: {
+        url: 'https://hf-mirror.com/camenduru/wav2lip/resolve/main/checkpoints/wav2lip_gan.pth',
+        filename: 'wav2lip_gan.pth',
+        size: '416MB',
+    },
     face_detection: {
-        url: 'https://hf-mirror.com/camenduru/wav2lip/resolve/main/s3fd.pth',
+        url: 'https://hf-mirror.com/camenduru/wav2lip/resolve/main/face_detection/detection/sfd/s3fd.pth',
         filename: 's3fd.pth',
         size: '85MB',
     },
@@ -93,45 +107,96 @@ function resolveWav2LipDir() {
     throw new Error('找不到 Wav2Lip 源码目录；请确保打包时已将 `src/services/Wav2Lip` 作为 `extraResources` 带上。');
 }
 function resolvePythonCommand(config) {
-    var _a;
-    var pythonFromConfig = (_a = config.pythonPath) === null || _a === void 0 ? void 0 : _a.trim();
+    var stripQuotes = function (value) {
+        var trimmed = value.trim();
+        if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+            (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+            return trimmed.slice(1, -1).trim();
+        }
+        return trimmed;
+    };
+    var pythonFromConfig = config.pythonPath ? stripQuotes(config.pythonPath) : '';
     if (pythonFromConfig)
         return pythonFromConfig;
-    var pythonFromEnv = (process.env.DIGITAL_HUMAN_PYTHON || process.env.VIRAL_VIDEO_AGENT_PYTHON || '').trim();
+    var pythonFromEnv = stripQuotes(process.env.DIGITAL_HUMAN_PYTHON || process.env.VIRAL_VIDEO_AGENT_PYTHON || '');
     if (pythonFromEnv)
         return pythonFromEnv;
     // 优先尝试 python（失败由 spawn error 处理）
     return 'python';
 }
-function getCpuFriendlyDefaults() {
-    var resizeFactor = Math.max(1, parseInt(process.env.WAV2LIP_RESIZE_FACTOR || '2', 10) || 2);
+function getEnvDefaults() {
+    var resizeFactor = Math.max(1, parseInt(process.env.WAV2LIP_RESIZE_FACTOR || '1', 10) || 1);
     var faceDetBatchSize = Math.max(1, parseInt(process.env.WAV2LIP_FACE_DET_BATCH_SIZE || '8', 10) || 8);
     var wav2lipBatchSize = Math.max(1, parseInt(process.env.WAV2LIP_BATCH_SIZE || '32', 10) || 32);
     return { resizeFactor: resizeFactor, faceDetBatchSize: faceDetBatchSize, wav2lipBatchSize: wav2lipBatchSize };
 }
+function finiteNumber(value, fallback) {
+    return Number.isFinite(value) ? value : fallback;
+}
+function clampNumber(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+function resolvePreset(config) {
+    var env = getEnvDefaults();
+    if (config.qualityPreset === 'fast') {
+        return {
+            resizeFactor: 2,
+            faceDetBatchSize: env.faceDetBatchSize,
+            wav2lipBatchSize: env.wav2lipBatchSize,
+            mouthOnly: false,
+        };
+    }
+    if (config.qualityPreset === 'quality') {
+        return {
+            resizeFactor: 1,
+            faceDetBatchSize: Math.max(1, Math.min(4, env.faceDetBatchSize)),
+            wav2lipBatchSize: Math.max(1, Math.min(16, env.wav2lipBatchSize)),
+            mouthOnly: true,
+        };
+    }
+    return {
+        resizeFactor: env.resizeFactor,
+        faceDetBatchSize: env.faceDetBatchSize,
+        wav2lipBatchSize: env.wav2lipBatchSize,
+        mouthOnly: false,
+    };
+}
 /**
  * 检查模型是否已下载
  */
-export function checkModelsExist(modelsDir) {
-    var wav2lipPath = path.join(modelsDir, WAV2LIP_MODELS.wav2lip.filename);
+export function checkModelsExist(modelsDir, options) {
+    if (options === void 0) { options = {}; }
+    var checkpoint = options.checkpoint || 'wav2lip';
+    var wav2lipPath = path.join(modelsDir, WAV2LIP_MODELS[checkpoint].filename);
     var facePath = path.join(modelsDir, WAV2LIP_MODELS.face_detection.filename);
-    return fs.existsSync(wav2lipPath) && fs.existsSync(facePath);
+    var minBytes = 10 * 1024 * 1024; // 防止误把重定向/HTML 当作模型文件
+    var isValidFile = function (filePath) {
+        try {
+            return fs.existsSync(filePath) && fs.statSync(filePath).size >= minBytes;
+        }
+        catch (_a) {
+            return false;
+        }
+    };
+    return isValidFile(wav2lipPath) && isValidFile(facePath);
 }
 /**
  * 下载模型文件
  */
-export function downloadModels(modelsDir, onProgress) {
-    return __awaiter(this, void 0, void 0, function () {
-        var models, _loop_1, i;
+export function downloadModels(modelsDir_1, onProgress_1) {
+    return __awaiter(this, arguments, void 0, function (modelsDir, onProgress, options) {
+        var checkpoint, models, _loop_1, i;
+        if (options === void 0) { options = {}; }
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
                     if (!fs.existsSync(modelsDir)) {
                         fs.mkdirSync(modelsDir, { recursive: true });
                     }
-                    models = [WAV2LIP_MODELS.wav2lip, WAV2LIP_MODELS.face_detection];
+                    checkpoint = options.checkpoint || 'wav2lip';
+                    models = [WAV2LIP_MODELS[checkpoint], WAV2LIP_MODELS.face_detection];
                     _loop_1 = function (i) {
-                        var model, targetPath;
+                        var model, targetPath, minBytes;
                         return __generator(this, function (_b) {
                             switch (_b.label) {
                                 case 0:
@@ -150,13 +215,14 @@ export function downloadModels(modelsDir, onProgress) {
                                         progress: (i / models.length) * 100,
                                         message: "\u6B63\u5728\u4E0B\u8F7D ".concat(model.filename, " (").concat(model.size, ")..."),
                                     });
+                                    minBytes = model.filename.endsWith('.pth') ? 10 * 1024 * 1024 : 0;
                                     return [4 /*yield*/, downloadFile(model.url, targetPath, function (percent) {
                                             onProgress === null || onProgress === void 0 ? void 0 : onProgress({
                                                 stage: 'downloading',
                                                 progress: (i / models.length) * 100 + (percent / models.length),
                                                 message: "\u4E0B\u8F7D ".concat(model.filename, ": ").concat(percent.toFixed(1), "%"),
                                             });
-                                        })];
+                                        }, { minBytes: minBytes })];
                                 case 1:
                                     _b.sent();
                                     return [2 /*return*/];
@@ -188,40 +254,67 @@ export function downloadModels(modelsDir, onProgress) {
 /**
  * 下载单个文件
  */
-function downloadFile(url, outputPath, onProgress) {
-    return __awaiter(this, void 0, void 0, function () {
+function downloadFile(url_1, outputPath_1, onProgress_1) {
+    return __awaiter(this, arguments, void 0, function (url, outputPath, onProgress, options) {
+        if (options === void 0) { options = {}; }
         return __generator(this, function (_a) {
             return [2 /*return*/, new Promise(function (resolve, reject) {
-                    var protocol = url.startsWith('https') ? https : http;
-                    var request = protocol.get(url, function (response) {
-                        // 处理重定向
-                        if (response.statusCode === 301 || response.statusCode === 302) {
-                            var redirectUrl = response.headers.location;
-                            if (redirectUrl) {
-                                downloadFile(redirectUrl, outputPath, onProgress).then(resolve).catch(reject);
+                    var minBytes = options.minBytes || 0;
+                    var maxRedirects = typeof options.maxRedirects === 'number' ? options.maxRedirects : 8;
+                    var visit = function (currentUrl, redirectsLeft) {
+                        var protocol = currentUrl.startsWith('https') ? https : http;
+                        var request = protocol.get(currentUrl, function (response) {
+                            var code = response.statusCode || 0;
+                            // 处理重定向（hf-mirror 常见 307/302）
+                            if ([301, 302, 303, 307, 308].includes(code) && response.headers.location) {
+                                if (redirectsLeft <= 0) {
+                                    response.resume();
+                                    reject(new Error('下载失败：重定向次数过多'));
+                                    return;
+                                }
+                                var nextUrl = new URL(response.headers.location, currentUrl).toString();
+                                response.resume();
+                                visit(nextUrl, redirectsLeft - 1);
                                 return;
                             }
-                        }
-                        var totalSize = parseInt(response.headers['content-length'] || '0', 10);
-                        var downloadedSize = 0;
-                        var file = fs.createWriteStream(outputPath);
-                        response.on('data', function (chunk) {
-                            downloadedSize += chunk.length;
-                            if (totalSize > 0) {
-                                onProgress === null || onProgress === void 0 ? void 0 : onProgress((downloadedSize / totalSize) * 100);
+                            if (code < 200 || code >= 300) {
+                                response.resume();
+                                reject(new Error("\u4E0B\u8F7D\u5931\u8D25\uFF1AHTTP ".concat(code)));
+                                return;
                             }
+                            var totalSize = parseInt(response.headers['content-length'] || '0', 10);
+                            var downloadedSize = 0;
+                            var file = fs.createWriteStream(outputPath);
+                            response.on('data', function (chunk) {
+                                downloadedSize += chunk.length;
+                                if (totalSize > 0) {
+                                    onProgress === null || onProgress === void 0 ? void 0 : onProgress((downloadedSize / totalSize) * 100);
+                                }
+                            });
+                            response.pipe(file);
+                            file.on('finish', function () {
+                                file.close();
+                                try {
+                                    var stat = fs.statSync(outputPath);
+                                    if (minBytes > 0 && stat.size < minBytes) {
+                                        fs.unlinkSync(outputPath);
+                                        reject(new Error("\u4E0B\u8F7D\u7684\u6587\u4EF6\u5F02\u5E38\uFF08".concat(stat.size, "B\uFF09\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC/\u955C\u50CF\u5730\u5740")));
+                                        return;
+                                    }
+                                    resolve();
+                                }
+                                catch (err) {
+                                    reject(err);
+                                }
+                            });
+                            file.on('error', function (err) {
+                                fs.unlink(outputPath, function () { });
+                                reject(err);
+                            });
                         });
-                        response.pipe(file);
-                        file.on('finish', function () {
-                            file.close();
-                            resolve();
-                        });
-                        file.on('error', function (err) {
-                            fs.unlink(outputPath, function () { });
-                            reject(err);
-                        });
-                    });
-                    request.on('error', reject);
+                        request.on('error', reject);
+                    };
+                    visit(url, maxRedirects);
                 })];
         });
     });
@@ -231,17 +324,18 @@ function downloadFile(url, outputPath, onProgress) {
  */
 export function runLipSync(config, videoPath, audioPath, outputPath, onProgress) {
     return __awaiter(this, void 0, void 0, function () {
-        var wav2lipDir, inferenceScript, runId, workDir, wav2lipModelPath, s3fdModelPath, ffmpegStaticPath, ffmpegPath, perf, pythonCommand;
+        var checkpoint, wav2lipDir, inferenceScript, runId, workDir, wav2lipModelPath, s3fdModelPath, ffmpegStaticPath, ffmpegPath, perf, pythonCommand, mouthOnlyRatio, mouthBlendSigma, sharpenAmount, sharpenSigma;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
-                    if (!!checkModelsExist(config.modelsDir)) return [3 /*break*/, 2];
+                    checkpoint = config.qualityPreset === 'quality' ? 'wav2lip_gan' : 'wav2lip';
+                    if (!!checkModelsExist(config.modelsDir, { checkpoint: checkpoint })) return [3 /*break*/, 2];
                     onProgress === null || onProgress === void 0 ? void 0 : onProgress({
                         stage: 'downloading',
                         progress: 0,
-                        message: '正在下载模型（首次运行）...',
+                        message: "\u6B63\u5728\u4E0B\u8F7D\u6A21\u578B\uFF08".concat(checkpoint, "\uFF0C\u9996\u6B21\u8FD0\u884C\uFF09..."),
                     });
-                    return [4 /*yield*/, downloadModels(config.modelsDir, onProgress)];
+                    return [4 /*yield*/, downloadModels(config.modelsDir, onProgress, { checkpoint: checkpoint })];
                 case 1:
                     _a.sent();
                     _a.label = 2;
@@ -257,19 +351,26 @@ export function runLipSync(config, videoPath, audioPath, outputPath, onProgress)
                     runId = Date.now();
                     workDir = path.join(config.tempDir, "wav2lip_run_".concat(runId));
                     fs.mkdirSync(path.join(workDir, 'temp'), { recursive: true });
-                    wav2lipModelPath = path.join(config.modelsDir, WAV2LIP_MODELS.wav2lip.filename);
+                    wav2lipModelPath = path.join(config.modelsDir, WAV2LIP_MODELS[checkpoint].filename);
                     s3fdModelPath = path.join(config.modelsDir, WAV2LIP_MODELS.face_detection.filename);
                     ffmpegStaticPath = require('ffmpeg-static');
+                    if (ffmpegStaticPath.includes('app.asar') && !ffmpegStaticPath.includes('app.asar.unpacked')) {
+                        ffmpegStaticPath = ffmpegStaticPath.replace('app.asar', 'app.asar.unpacked');
+                    }
                     ffmpegPath = config.ffmpegPath || ffmpegStaticPath;
-                    perf = getCpuFriendlyDefaults();
+                    perf = resolvePreset(config);
                     pythonCommand = resolvePythonCommand(config);
+                    mouthOnlyRatio = clampNumber(finiteNumber(parseFloat(process.env.WAV2LIP_MOUTH_ONLY_RATIO || '0.70'), 0.7), 0.0, 1.0);
+                    mouthBlendSigma = Math.max(0, finiteNumber(parseFloat(process.env.WAV2LIP_MOUTH_BLEND_SIGMA || '3.0'), 3.0));
+                    sharpenAmount = Math.max(0, finiteNumber(parseFloat(process.env.WAV2LIP_SHARPEN_AMOUNT || '0.35'), 0.35));
+                    sharpenSigma = Math.max(0.1, finiteNumber(parseFloat(process.env.WAV2LIP_SHARPEN_SIGMA || '1.0'), 1.0));
                     onProgress === null || onProgress === void 0 ? void 0 : onProgress({
                         stage: 'processing',
                         progress: 10,
                         message: '初始化推理环境...',
                     });
                     return [2 /*return*/, new Promise(function (resolve, reject) {
-                            var pythonProcess = spawn(pythonCommand, [
+                            var pythonProcess = spawn(pythonCommand, __spreadArray([
                                 inferenceScript,
                                 '--checkpoint_path',
                                 wav2lipModelPath,
@@ -286,13 +387,31 @@ export function runLipSync(config, videoPath, audioPath, outputPath, onProgress)
                                 '--face_det_batch_size',
                                 String(perf.faceDetBatchSize),
                                 '--wav2lip_batch_size',
-                                String(perf.wav2lipBatchSize),
-                            ], {
+                                String(perf.wav2lipBatchSize)
+                            ], (perf.mouthOnly
+                                ? [
+                                    '--mouth_only',
+                                    '--mouth_only_ratio',
+                                    String(mouthOnlyRatio),
+                                    '--mouth_blend_sigma',
+                                    String(mouthBlendSigma),
+                                    '--sharpen_amount',
+                                    String(sharpenAmount),
+                                    '--sharpen_sigma',
+                                    String(sharpenSigma),
+                                    '--pads',
+                                    '0',
+                                    '0',
+                                    '0',
+                                    '0',
+                                ]
+                                : []), true), {
                                 cwd: workDir,
                                 env: __assign(__assign({}, process.env), { 
                                     // 让 sfd_detector 从 modelsDir 读取模型，避免向 resources 目录写入
                                     WAV2LIP_S3FD_PATH: s3fdModelPath, PYTHONIOENCODING: 'utf-8' }),
-                                shell: true,
+                                shell: false,
+                                windowsHide: true,
                             });
                             var stdout = '';
                             var stderr = '';

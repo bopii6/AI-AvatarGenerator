@@ -74,7 +74,7 @@ function App() {
         }
     }, [])
 
-    // Tab 切换（不在切换 Tab 时自动触发云端服务切换，避免首次进入页面被强制等待）
+    // Tab 切换（语音走云端 API，数字人走独立 GPU 服务，无需服务切换/等待）
     const handleTabChange = useCallback((key: string) => {
         if (key === activeKey) return
         setActiveKey(key)
@@ -661,7 +661,7 @@ function App() {
                     items={[
                         { key: 'cookie', label: '全网分发账号', children: <CookieSettings /> },
                         { key: 'voice', label: '声音克隆', children: <VoiceCloneSettings /> },
-                        { key: 'auth', label: '授权/密钥', children: <ApiKeySettings /> },
+                        { key: 'auth', label: '语音 API', children: <ApiKeySettings /> },
                         { key: 'server', label: '服务器设置', children: <ServerSettings /> },
                     ]}
                 />
