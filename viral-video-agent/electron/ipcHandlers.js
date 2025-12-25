@@ -107,6 +107,76 @@ function convertAudioToWavIfNeeded(sourcePath) {
     }
     return outputPath;
 }
+function splitTextForTts(input, maxChunkChars) {
+    var text = (input || '').trim();
+    if (!text)
+        return [];
+    if (text.length <= maxChunkChars)
+        return [text];
+    var rawParts = text
+        .replace(/\r\n/g, '\n')
+        .split(/(?<=[。！？!?；;，,])|\n+/)
+        .map(function (s) { return s.trim(); })
+        .filter(Boolean);
+    var chunks = [];
+    var current = '';
+    var pushCurrent = function () {
+        var v = current.trim();
+        if (v)
+            chunks.push(v);
+        current = '';
+    };
+    for (var _i = 0, rawParts_1 = rawParts; _i < rawParts_1.length; _i++) {
+        var part = rawParts_1[_i];
+        if (!part)
+            continue;
+        if (part.length > maxChunkChars) {
+            pushCurrent();
+            for (var i = 0; i < part.length; i += maxChunkChars) {
+                chunks.push(part.slice(i, i + maxChunkChars));
+            }
+            continue;
+        }
+        var candidate = current ? "".concat(current, " ").concat(part) : part;
+        if (candidate.length > maxChunkChars) {
+            pushCurrent();
+            current = part;
+        }
+        else {
+            current = candidate;
+        }
+    }
+    pushCurrent();
+    return chunks.length ? chunks : [text];
+}
+function concatAudioMp3(inputs, outputPath) {
+    var outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir))
+        fs.mkdirSync(outputDir, { recursive: true });
+    var listFile = path.join(outputDir, "ffmpeg_concat_".concat(Date.now(), ".txt"));
+    var content = inputs
+        .map(function (p) { return "file '".concat(p.replace(/'/g, "'\\''"), "'"); })
+        .join('\n');
+    fs.writeFileSync(listFile, content, 'utf8');
+    var args = [
+        '-y',
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', listFile,
+        '-c:a', 'libmp3lame',
+        '-q:a', '4',
+        outputPath,
+    ];
+    var result = spawnSync(ffmpegExecutable, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    try {
+        fs.unlinkSync(listFile);
+    }
+    catch ( /* ignore */_a) { /* ignore */ }
+    if (result.status !== 0) {
+        var err = (result.stderr || result.stdout || '').toString('utf8');
+        throw new Error("\u97F3\u9891\u5408\u5E76\u5931\u8D25\uFF1A".concat(err.trim()));
+    }
+}
 var PUBLISH_PLATFORM_TYPE = {
     // 1 小红书 2 视频号 3 抖音 4 快手
     xiaohongshu: 1,
@@ -644,11 +714,11 @@ export function registerIpcHandlers(mainWindow) {
         });
     }); });
     ipcMain.handle('cloud-voice-tts', function (_event, params) { return __awaiter(_this, void 0, void 0, function () {
-        var text, voiceId, synthesizeSpeech, _a, apiKey, model, outputDir, outputPath, audioPath, error_5;
-        return __generator(this, function (_b) {
-            switch (_b.label) {
+        var text, voiceId, _a, synthesizeSpeech, getVoice, _b, apiKey, model, voice, checkErr_1, outputDir, outputPath, chunks, audioPath, partPaths, i, partOut, partPath, _i, partPaths_1, p, error_5;
+        return __generator(this, function (_c) {
+            switch (_c.label) {
                 case 0:
-                    _b.trys.push([0, 3, , 4]);
+                    _c.trys.push([0, 12, , 13]);
                     text = ((params === null || params === void 0 ? void 0 : params.text) || '').trim();
                     if (!text)
                         throw new Error('文本为空');
@@ -657,18 +727,64 @@ export function registerIpcHandlers(mainWindow) {
                         throw new Error('voiceId 为空');
                     return [4 /*yield*/, import('../src/services/aliyunVoiceService')];
                 case 1:
-                    synthesizeSpeech = (_b.sent()).synthesizeSpeech;
-                    _a = getAliyunVoiceRuntime(), apiKey = _a.apiKey, model = _a.model;
+                    _a = _c.sent(), synthesizeSpeech = _a.synthesizeSpeech, getVoice = _a.getVoice;
+                    _b = getAliyunVoiceRuntime(), apiKey = _b.apiKey, model = _b.model;
+                    _c.label = 2;
+                case 2:
+                    _c.trys.push([2, 4, , 5]);
+                    return [4 /*yield*/, getVoice({ apiKey: apiKey, model: model }, voiceId)];
+                case 3:
+                    voice = _c.sent();
+                    if (!voice) {
+                        throw new Error('音色不存在或已删除，请在声音克隆里刷新列表');
+                    }
+                    if (voice.status !== 'ready') {
+                        throw new Error("\u97F3\u8272\u4ECD\u5728\u8BAD\u7EC3\u4E2D\uFF08\u5F53\u524D\u72B6\u6001: ".concat(voice.status, "\uFF09"));
+                    }
+                    return [3 /*break*/, 5];
+                case 4:
+                    checkErr_1 = _c.sent();
+                    throw new Error((checkErr_1 === null || checkErr_1 === void 0 ? void 0 : checkErr_1.message) || '音色状态检查失败，请稍后再试');
+                case 5:
                     outputDir = path.join(app.getPath('userData'), 'cloud_voice_data', 'audio');
                     outputPath = path.join(outputDir, "aliyun_voice_".concat(Date.now(), ".mp3"));
+                    chunks = splitTextForTts(text, 220);
+                    console.log('[cloud-voice-tts] text chars:', text.length, 'chunks:', chunks.length);
+                    if (!(chunks.length <= 1)) return [3 /*break*/, 7];
                     return [4 /*yield*/, synthesizeSpeech({ apiKey: apiKey, model: model }, { voiceId: voiceId, text: text, outputPath: outputPath })];
-                case 2:
-                    audioPath = _b.sent();
+                case 6:
+                    audioPath = _c.sent();
                     return [2 /*return*/, { success: true, data: { audioPath: audioPath } }];
-                case 3:
-                    error_5 = _b.sent();
+                case 7:
+                    partPaths = [];
+                    i = 0;
+                    _c.label = 8;
+                case 8:
+                    if (!(i < chunks.length)) return [3 /*break*/, 11];
+                    partOut = path.join(outputDir, "aliyun_voice_part_".concat(Date.now(), "_").concat(i, ".mp3"));
+                    return [4 /*yield*/, synthesizeSpeech({ apiKey: apiKey, model: model }, { voiceId: voiceId, text: chunks[i], outputPath: partOut })];
+                case 9:
+                    partPath = _c.sent();
+                    partPaths.push(partPath);
+                    _c.label = 10;
+                case 10:
+                    i++;
+                    return [3 /*break*/, 8];
+                case 11:
+                    concatAudioMp3(partPaths, outputPath);
+                    for (_i = 0, partPaths_1 = partPaths; _i < partPaths_1.length; _i++) {
+                        p = partPaths_1[_i];
+                        try {
+                            fs.unlinkSync(p);
+                        }
+                        catch ( /* ignore */_d) { /* ignore */ }
+                    }
+                    return [2 /*return*/, { success: true, data: { audioPath: outputPath } }];
+                case 12:
+                    error_5 = _c.sent();
+                    console.error('[cloud-voice-tts] failed', error_5);
                     return [2 /*return*/, { success: false, error: error_5.message }];
-                case 4: return [2 /*return*/];
+                case 13: return [2 /*return*/];
             }
         });
     }); });

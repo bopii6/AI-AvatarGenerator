@@ -379,135 +379,211 @@ export function deleteVoice(config, voiceId) {
  */
 export function synthesizeSpeech(config, params) {
     return __awaiter(this, void 0, void 0, function () {
-        var apiKey, text, voiceId, model, outputDir;
+        var apiKey, text, voiceId, model, outputDir, debugWs, runOnce, e1_1, msg;
+        var _this = this;
         return __generator(this, function (_a) {
-            apiKey = safeTrim(config.apiKey);
-            if (!apiKey)
-                throw new Error('未配置阿里云 DashScope API Key');
-            text = safeTrim(params.text);
-            if (!text)
-                throw new Error('合成文本为空');
-            voiceId = safeTrim(params.voiceId);
-            if (!voiceId)
-                throw new Error('voice_id 为空');
-            model = config.model || DEFAULT_MODEL;
-            outputDir = path.dirname(params.outputPath);
-            if (!fs.existsSync(outputDir)) {
-                fs.mkdirSync(outputDir, { recursive: true });
-            }
-            return [2 /*return*/, new Promise(function (resolve, reject) {
-                    var taskId = randomUUID();
-                    var audioChunks = [];
-                    var resolved = false;
-                    // WebSocket 连接
-                    var ws = new WebSocket(DASHSCOPE_WEBSOCKET_URL, {
-                        headers: {
-                            'Authorization': "Bearer ".concat(apiKey),
-                        },
-                    });
-                    var timeout = setTimeout(function () {
-                        if (!resolved) {
-                            resolved = true;
-                            ws.close();
-                            reject(new Error('语音合成超时'));
-                        }
-                    }, 180000); // 3 分钟超时
-                    ws.on('open', function () {
-                        // 发送 run-task 消息
-                        var message = {
-                            header: {
-                                action: 'run-task',
-                                task_id: taskId,
-                                streaming: 'duplex',
-                            },
-                            payload: {
-                                task_group: 'audio',
-                                task: 'tts',
-                                function: 'SpeechSynthesizer',
-                                model: model,
-                                parameters: {
-                                    voice: voiceId,
-                                    format: 'mp3',
-                                    sample_rate: 22050,
-                                },
-                                input: {
-                                    text: text,
-                                },
-                            },
-                        };
-                        ws.send(JSON.stringify(message));
-                    });
-                    ws.on('message', function (data) {
-                        var _a, _b, _c, _d;
-                        try {
-                            // 尝试解析为 JSON（控制消息）
-                            var str = data.toString('utf8');
-                            if (str.startsWith('{')) {
-                                var msg = JSON.parse(str);
-                                var event_1 = (_a = msg === null || msg === void 0 ? void 0 : msg.header) === null || _a === void 0 ? void 0 : _a.event;
-                                if (event_1 === 'task-started') {
-                                    console.log('[AliyunVoice] 语音合成任务开始');
-                                }
-                                else if (event_1 === 'task-finished') {
-                                    console.log('[AliyunVoice] 语音合成任务完成');
-                                    // 任务完成，发送 finish-task
-                                    ws.send(JSON.stringify({
-                                        header: {
-                                            action: 'finish-task',
-                                            task_id: taskId,
-                                        },
-                                    }));
-                                }
-                                else if (event_1 === 'result-generated') {
-                                    // 音频数据在 payload 中
-                                    var audio = (_c = (_b = msg === null || msg === void 0 ? void 0 : msg.payload) === null || _b === void 0 ? void 0 : _b.output) === null || _c === void 0 ? void 0 : _c.audio;
-                                    if (audio) {
-                                        audioChunks.push(Buffer.from(audio, 'base64'));
-                                    }
-                                }
-                                else if (event_1 === 'task-failed') {
-                                    var errMsg = ((_d = msg === null || msg === void 0 ? void 0 : msg.payload) === null || _d === void 0 ? void 0 : _d.message) || '合成失败';
-                                    if (!resolved) {
+            switch (_a.label) {
+                case 0:
+                    apiKey = safeTrim(config.apiKey);
+                    if (!apiKey)
+                        throw new Error('未配置阿里云 DashScope API Key');
+                    text = safeTrim(params.text);
+                    if (!text)
+                        throw new Error('合成文本为空');
+                    voiceId = safeTrim(params.voiceId);
+                    if (!voiceId)
+                        throw new Error('voice_id 为空');
+                    model = config.model || DEFAULT_MODEL;
+                    outputDir = path.dirname(params.outputPath);
+                    if (!fs.existsSync(outputDir)) {
+                        fs.mkdirSync(outputDir, { recursive: true });
+                    }
+                    debugWs = (process.env.DASHSCOPE_DEBUG_WS || '').trim() === '1';
+                    runOnce = function (options) { return __awaiter(_this, void 0, void 0, function () {
+                        return __generator(this, function (_a) {
+                            return [2 /*return*/, new Promise(function (resolve, reject) {
+                                    var taskId = randomUUID();
+                                    var audioChunks = [];
+                                    var resolved = false;
+                                    var ws = new WebSocket(DASHSCOPE_WEBSOCKET_URL, {
+                                        headers: { 'Authorization': "Bearer ".concat(apiKey) },
+                                    });
+                                    var timeout = setTimeout(function () {
+                                        if (!resolved) {
+                                            resolved = true;
+                                            ws.close();
+                                            reject(new Error('语音合成超时'));
+                                        }
+                                    }, 180000);
+                                    var fail = function (msg) {
+                                        if (resolved)
+                                            return;
                                         resolved = true;
                                         clearTimeout(timeout);
-                                        ws.close();
-                                        reject(new Error(errMsg));
-                                    }
-                                }
-                            }
-                            else {
-                                // 二进制音频数据
-                                audioChunks.push(data);
-                            }
-                        }
-                        catch (_e) {
-                            // 可能是二进制数据
-                            audioChunks.push(data);
-                        }
-                    });
-                    ws.on('close', function () {
-                        clearTimeout(timeout);
-                        if (!resolved) {
-                            resolved = true;
-                            if (audioChunks.length > 0) {
-                                var audioBuffer = Buffer.concat(audioChunks);
-                                fs.writeFileSync(params.outputPath, audioBuffer);
-                                console.log('[AliyunVoice] 音频保存到:', params.outputPath);
-                                resolve(params.outputPath);
-                            }
-                            else {
-                                reject(new Error('未收到音频数据'));
-                            }
-                        }
-                    });
-                    ws.on('error', function (err) {
-                        clearTimeout(timeout);
-                        if (!resolved) {
-                            resolved = true;
-                            reject(new Error("WebSocket \u9519\u8BEF: ".concat(err.message)));
-                        }
-                    });
-                })];
+                                        try {
+                                            ws.close();
+                                        }
+                                        catch ( /* ignore */_a) { /* ignore */ }
+                                        reject(new Error(msg));
+                                    };
+                                    ws.on('open', function () {
+                                        // DashScope tts_v2 协议：run-task(start) -> continue-task(text) -> finish-task
+                                        var startMsg = {
+                                            header: {
+                                                action: 'run-task',
+                                                task_id: taskId,
+                                                streaming: 'duplex',
+                                            },
+                                            payload: {
+                                                model: model,
+                                                task_group: 'audio',
+                                                task: 'tts',
+                                                function: 'SpeechSynthesizer',
+                                                input: {},
+                                                parameters: {
+                                                    voice: voiceId,
+                                                    volume: 50,
+                                                    text_type: 'PlainText',
+                                                    sample_rate: options.sampleRate,
+                                                    rate: 1.0,
+                                                    format: options.format,
+                                                    pitch: 1.0,
+                                                    seed: 0,
+                                                    type: 0,
+                                                },
+                                            },
+                                        };
+                                        var continueMsg = {
+                                            header: {
+                                                action: 'continue-task',
+                                                task_id: taskId,
+                                                streaming: 'duplex',
+                                            },
+                                            payload: {
+                                                model: model,
+                                                task_group: 'audio',
+                                                task: 'tts',
+                                                function: 'SpeechSynthesizer',
+                                                input: { text: text },
+                                            },
+                                        };
+                                        var finishMsg = {
+                                            header: {
+                                                action: 'finish-task',
+                                                task_id: taskId,
+                                                streaming: 'duplex',
+                                            },
+                                            payload: { input: {} },
+                                        };
+                                        if (debugWs)
+                                            console.log('[AliyunVoice] WS start:', JSON.stringify(startMsg));
+                                        ws.send(JSON.stringify(startMsg));
+                                        if (debugWs)
+                                            console.log('[AliyunVoice] WS continue:', JSON.stringify(continueMsg));
+                                        ws.send(JSON.stringify(continueMsg));
+                                        if (debugWs)
+                                            console.log('[AliyunVoice] WS finish:', JSON.stringify(finishMsg));
+                                        ws.send(JSON.stringify(finishMsg));
+                                    });
+                                    ws.on('message', function (data) {
+                                        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+                                        var str = data.toString('utf8');
+                                        if (str.startsWith('{')) {
+                                            var msg = void 0;
+                                            try {
+                                                msg = JSON.parse(str);
+                                            }
+                                            catch (_l) {
+                                                audioChunks.push(data);
+                                                return;
+                                            }
+                                            var event_1 = ((_a = msg === null || msg === void 0 ? void 0 : msg.header) === null || _a === void 0 ? void 0 : _a.event) || ((_b = msg === null || msg === void 0 ? void 0 : msg.header) === null || _b === void 0 ? void 0 : _b.status);
+                                            if (debugWs)
+                                                console.log('[AliyunVoice] WS event:', event_1, 'raw:', str.slice(0, 500));
+                                            if (event_1 === 'task-started') {
+                                                console.log('[AliyunVoice] 语音合成任务开始');
+                                                return;
+                                            }
+                                            if (event_1 === 'result-generated') {
+                                                var audio = ((_e = (_d = (_c = msg === null || msg === void 0 ? void 0 : msg.payload) === null || _c === void 0 ? void 0 : _c.output) === null || _d === void 0 ? void 0 : _d.audio) === null || _e === void 0 ? void 0 : _e.data) ||
+                                                    ((_g = (_f = msg === null || msg === void 0 ? void 0 : msg.payload) === null || _f === void 0 ? void 0 : _f.output) === null || _g === void 0 ? void 0 : _g.audio) ||
+                                                    ((_h = msg === null || msg === void 0 ? void 0 : msg.payload) === null || _h === void 0 ? void 0 : _h.audio) ||
+                                                    ((_k = (_j = msg === null || msg === void 0 ? void 0 : msg.payload) === null || _j === void 0 ? void 0 : _j.output) === null || _k === void 0 ? void 0 : _k.data);
+                                                if (typeof audio === 'string' && audio) {
+                                                    audioChunks.push(Buffer.from(audio, 'base64'));
+                                                }
+                                                else if (Array.isArray(audio)) {
+                                                    for (var _i = 0, audio_1 = audio; _i < audio_1.length; _i++) {
+                                                        var a = audio_1[_i];
+                                                        if (typeof a === 'string' && a)
+                                                            audioChunks.push(Buffer.from(a, 'base64'));
+                                                    }
+                                                }
+                                                return;
+                                            }
+                                            if (event_1 === 'task-finished') {
+                                                if (debugWs)
+                                                    console.log('[AliyunVoice] WS task-finished');
+                                                try {
+                                                    ws.close();
+                                                }
+                                                catch ( /* ignore */_m) { /* ignore */ }
+                                                return;
+                                            }
+                                            if (event_1 === 'task-failed' || event_1 === 'error') {
+                                                var payload = msg === null || msg === void 0 ? void 0 : msg.payload;
+                                                var header = msg === null || msg === void 0 ? void 0 : msg.header;
+                                                var errCode = (payload === null || payload === void 0 ? void 0 : payload.code) || (payload === null || payload === void 0 ? void 0 : payload.error_code) || (payload === null || payload === void 0 ? void 0 : payload.reason) || (header === null || header === void 0 ? void 0 : header.code) || (header === null || header === void 0 ? void 0 : header.error_code);
+                                                var errMsgRaw = (payload === null || payload === void 0 ? void 0 : payload.message) ||
+                                                    (payload === null || payload === void 0 ? void 0 : payload.error_msg) ||
+                                                    (header === null || header === void 0 ? void 0 : header.message) ||
+                                                    (header === null || header === void 0 ? void 0 : header.error_message) ||
+                                                    (header === null || header === void 0 ? void 0 : header.status_message) ||
+                                                    '合成失败';
+                                                var errMsg = errCode ? "[".concat(errCode, "] ").concat(errMsgRaw) : errMsgRaw;
+                                                console.error('[AliyunVoice] 任务失败:', str.slice(0, 1200));
+                                                fail(errMsg);
+                                                return;
+                                            }
+                                            return;
+                                        }
+                                        audioChunks.push(data);
+                                    });
+                                    ws.on('close', function () {
+                                        clearTimeout(timeout);
+                                        if (resolved)
+                                            return;
+                                        resolved = true;
+                                        if (audioChunks.length > 0) {
+                                            var audioBuffer = Buffer.concat(audioChunks);
+                                            fs.writeFileSync(params.outputPath, audioBuffer);
+                                            resolve(params.outputPath);
+                                        }
+                                        else {
+                                            reject(new Error('未收到音频数据'));
+                                        }
+                                    });
+                                    ws.on('error', function (err) {
+                                        clearTimeout(timeout);
+                                        fail("WebSocket \u9519\u8BEF: ".concat(err.message));
+                                    });
+                                })];
+                        });
+                    }); };
+                    _a.label = 1;
+                case 1:
+                    _a.trys.push([1, 3, , 6]);
+                    return [4 /*yield*/, runOnce({ format: 'wav', sampleRate: 16000 })];
+                case 2: return [2 /*return*/, _a.sent()];
+                case 3:
+                    e1_1 = _a.sent();
+                    msg = String((e1_1 === null || e1_1 === void 0 ? void 0 : e1_1.message) || e1_1);
+                    if (!(msg.includes('timeout') || msg.includes('InvalidParameter') || msg.includes('task-failed'))) return [3 /*break*/, 5];
+                    return [4 /*yield*/, runOnce({ format: 'mp3', sampleRate: 22050 })];
+                case 4: return [2 /*return*/, _a.sent()];
+                case 5: throw e1_1;
+                case 6: return [2 /*return*/];
+            }
         });
     });
 }

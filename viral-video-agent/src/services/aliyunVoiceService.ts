@@ -14,7 +14,7 @@ import http from 'http'
 import path from 'path'
 import https from 'https'
 import WebSocket from 'ws'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 
 // ==================== 配置 ====================
 
@@ -52,15 +52,27 @@ function safeTrim(input: string | undefined | null): string {
 
 function sanitizePrefix(name: string): string {
     // DashScope 要求：仅允许数字、大小写字母和下划线，不超过10个字符
-    return safeTrim(name).replace(/[^a-zA-Z0-9_]/g, '').slice(0, 10) || 'voice'
+    const raw = safeTrim(name)
+    const cleaned = raw.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 10)
+    if (cleaned) return cleaned
+
+    // 用户输入全是中文/符号时，避免都退化成同一个 "voice"
+    if (!raw) return 'voice'
+    const hash = createHash('sha1').update(raw).digest('hex').slice(0, 9) // 9 + 'v' = 10 chars
+    return `v${hash}`
 }
 
 function parseVoiceName(voiceId: string): string {
     // voice_id 格式：cosyvoice-v3-flash-myvoice-xxxxxxxx
     // 提取用户设置的前缀部分
     const parts = voiceId.split('-')
+    if (parts.length >= 5) {
+        // 返回用户设置的前缀部分（第4个部分）+ 短 ID（用于区分同名前缀的多个音色）
+        const prefix = parts[3] || voiceId
+        const shortId = (parts[4] || '').slice(0, 6)
+        return shortId ? `${prefix}-${shortId}` : prefix
+    }
     if (parts.length >= 4) {
-        // 返回用户设置的前缀部分（第4个部分）
         return parts[3] || voiceId
     }
     return voiceId
@@ -372,119 +384,204 @@ export async function synthesizeSpeech(
         fs.mkdirSync(outputDir, { recursive: true })
     }
 
-    return new Promise((resolve, reject) => {
-        const taskId = randomUUID()
-        const audioChunks: Buffer[] = []
-        let resolved = false
+    const debugWs = (process.env.DASHSCOPE_DEBUG_WS || '').trim() === '1'
 
-        // WebSocket 连接
-        const ws = new WebSocket(DASHSCOPE_WEBSOCKET_URL, {
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-            },
-        })
+    const runOnce = async (options: { format: 'mp3' | 'wav' | 'pcm' | 'opus'; sampleRate: number }) => {
+        return new Promise<string>((resolve, reject) => {
+            const taskId = randomUUID()
+            const audioChunks: Buffer[] = []
+            let resolved = false
 
-        const timeout = setTimeout(() => {
-            if (!resolved) {
+            const ws = new WebSocket(DASHSCOPE_WEBSOCKET_URL, {
+                headers: { 'Authorization': `Bearer ${apiKey}` },
+            })
+
+            const timeout = setTimeout(() => {
+                if (!resolved) {
+                    resolved = true
+                    ws.close()
+                    reject(new Error('语音合成超时'))
+                }
+            }, 180_000)
+
+            const fail = (msg: string) => {
+                if (resolved) return
                 resolved = true
-                ws.close()
-                reject(new Error('语音合成超时'))
+                clearTimeout(timeout)
+                try { ws.close() } catch { /* ignore */ }
+                reject(new Error(msg))
             }
-        }, 180_000) // 3 分钟超时
 
-        ws.on('open', () => {
-            // 发送 run-task 消息
-            const message = {
-                header: {
-                    action: 'run-task',
-                    task_id: taskId,
-                    streaming: 'duplex',
-                },
-                payload: {
-                    task_group: 'audio',
-                    task: 'tts',
-                    function: 'SpeechSynthesizer',
-                    model,
-                    parameters: {
-                        voice: voiceId,
-                        format: 'mp3',
-                        sample_rate: 22050,
+            ws.on('open', () => {
+                // DashScope tts_v2 协议：run-task(start) -> continue-task(text) -> finish-task
+                const startMsg = {
+                    header: {
+                        action: 'run-task',
+                        task_id: taskId,
+                        streaming: 'duplex',
                     },
-                    input: {
-                        text,
+                    payload: {
+                        model,
+                        task_group: 'audio',
+                        task: 'tts',
+                        function: 'SpeechSynthesizer',
+                        input: {},
+                        parameters: {
+                            voice: voiceId,
+                            volume: 50,
+                            text_type: 'PlainText',
+                            sample_rate: options.sampleRate,
+                            rate: 1.0,
+                            format: options.format,
+                            pitch: 1.0,
+                            seed: 0,
+                            type: 0,
+                        },
                     },
-                },
-            }
-            ws.send(JSON.stringify(message))
-        })
+                }
 
-        ws.on('message', (data: Buffer) => {
-            try {
-                // 尝试解析为 JSON（控制消息）
+                const continueMsg = {
+                    header: {
+                        action: 'continue-task',
+                        task_id: taskId,
+                        streaming: 'duplex',
+                    },
+                    payload: {
+                        model,
+                        task_group: 'audio',
+                        task: 'tts',
+                        function: 'SpeechSynthesizer',
+                        input: { text },
+                    },
+                }
+
+                const finishMsg = {
+                    header: {
+                        action: 'finish-task',
+                        task_id: taskId,
+                        streaming: 'duplex',
+                    },
+                    payload: { input: {} },
+                }
+
+                if (debugWs) console.log('[AliyunVoice] WS start:', JSON.stringify(startMsg))
+                ws.send(JSON.stringify(startMsg))
+                if (debugWs) console.log('[AliyunVoice] WS continue:', JSON.stringify(continueMsg))
+                ws.send(JSON.stringify(continueMsg))
+                if (debugWs) console.log('[AliyunVoice] WS finish:', JSON.stringify(finishMsg))
+                ws.send(JSON.stringify(finishMsg))
+            })
+
+            ws.on('message', (data: Buffer) => {
                 const str = data.toString('utf8')
                 if (str.startsWith('{')) {
-                    const msg = JSON.parse(str)
-                    const event = msg?.header?.event
+                    let msg: any
+                    try {
+                        msg = JSON.parse(str)
+                    } catch {
+                        audioChunks.push(data)
+                        return
+                    }
+
+                    const event = msg?.header?.event || msg?.header?.status
+                    if (debugWs) console.log('[AliyunVoice] WS event:', event, 'raw:', str.slice(0, 500))
 
                     if (event === 'task-started') {
                         console.log('[AliyunVoice] 语音合成任务开始')
-                    } else if (event === 'task-finished') {
-                        console.log('[AliyunVoice] 语音合成任务完成')
-                        // 任务完成，发送 finish-task
-                        ws.send(JSON.stringify({
-                            header: {
-                                action: 'finish-task',
-                                task_id: taskId,
-                            },
-                        }))
-                    } else if (event === 'result-generated') {
-                        // 音频数据在 payload 中
-                        const audio = msg?.payload?.output?.audio
-                        if (audio) {
-                            audioChunks.push(Buffer.from(audio, 'base64'))
-                        }
-                    } else if (event === 'task-failed') {
-                        const errMsg = msg?.payload?.message || '合成失败'
-                        if (!resolved) {
-                            resolved = true
-                            clearTimeout(timeout)
-                            ws.close()
-                            reject(new Error(errMsg))
-                        }
+                        return
                     }
-                } else {
-                    // 二进制音频数据
-                    audioChunks.push(data)
-                }
-            } catch {
-                // 可能是二进制数据
-                audioChunks.push(data)
-            }
-        })
 
-        ws.on('close', () => {
-            clearTimeout(timeout)
-            if (!resolved) {
+                    if (event === 'result-generated') {
+                        const audio =
+                            msg?.payload?.output?.audio?.data ||
+                            msg?.payload?.output?.audio ||
+                            msg?.payload?.audio ||
+                            msg?.payload?.output?.data
+                        if (typeof audio === 'string' && audio) {
+                            audioChunks.push(Buffer.from(audio, 'base64'))
+                        } else if (Array.isArray(audio)) {
+                            for (const a of audio) {
+                                if (typeof a === 'string' && a) audioChunks.push(Buffer.from(a, 'base64'))
+                            }
+                        }
+                        return
+                    }
+
+                    if (event === 'task-finished') {
+                        if (debugWs) console.log('[AliyunVoice] WS task-finished')
+                        try { ws.close() } catch { /* ignore */ }
+                        return
+                    }
+
+                    if (event === 'task-failed' || event === 'error') {
+                        const payload = msg?.payload
+                        const header = msg?.header
+                        const errCode = payload?.code || payload?.error_code || payload?.reason || header?.code || header?.error_code
+                        const errMsgRaw =
+                            payload?.message ||
+                            payload?.error_msg ||
+                            header?.message ||
+                            header?.error_message ||
+                            header?.status_message ||
+                            '合成失败'
+                        const errMsg = errCode ? `[${errCode}] ${errMsgRaw}` : errMsgRaw
+                        console.error('[AliyunVoice] 任务失败:', str.slice(0, 1200))
+                        fail(errMsg)
+                        return
+                    }
+
+                    return
+                }
+
+                audioChunks.push(data)
+            })
+
+            ws.on('close', () => {
+                clearTimeout(timeout)
+                if (resolved) return
                 resolved = true
                 if (audioChunks.length > 0) {
                     const audioBuffer = Buffer.concat(audioChunks)
                     fs.writeFileSync(params.outputPath, audioBuffer)
-                    console.log('[AliyunVoice] 音频保存到:', params.outputPath)
                     resolve(params.outputPath)
                 } else {
                     reject(new Error('未收到音频数据'))
                 }
-            }
-        })
+            })
 
-        ws.on('error', (err: Error) => {
-            clearTimeout(timeout)
-            if (!resolved) {
-                resolved = true
-                reject(new Error(`WebSocket 错误: ${err.message}`))
-            }
+            ws.on('error', (err: Error) => {
+                clearTimeout(timeout)
+                fail(`WebSocket 错误: ${err.message}`)
+            })
         })
-    })
+    }
+
+    // 输出格式跟随 outputPath 后缀，避免“内容是 wav 但文件名是 mp3”这种坑
+    const outExt = path.extname(params.outputPath).toLowerCase()
+
+    // wav：优先 16k（更稳），失败再尝试 22.05k（部分环境/文本更快）
+    if (outExt === '.wav' || !outExt) {
+        try {
+            return await runOnce({ format: 'wav', sampleRate: 16000 })
+        } catch (e1: any) {
+            const msg = String(e1?.message || e1)
+            if (msg.includes('timeout') || msg.includes('InvalidParameter') || msg.includes('task-failed')) {
+                return await runOnce({ format: 'wav', sampleRate: 22050 })
+            }
+            throw e1
+        }
+    }
+
+    // mp3：直接用 mp3/22050（更小更快），失败再退回 wav/16000（仍然写入到 mp3 路径，由上层决定是否转码）
+    try {
+        return await runOnce({ format: 'mp3', sampleRate: 22050 })
+    } catch (e1: any) {
+        const msg = String(e1?.message || e1)
+        if (msg.includes('timeout') || msg.includes('InvalidParameter') || msg.includes('task-failed')) {
+            return await runOnce({ format: 'wav', sampleRate: 16000 })
+        }
+        throw e1
+    }
 }
 
 /**

@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>全网分发中心（轻量版）</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: #0b1220; color: #e5e7eb; }
+      header { padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,.08); background: rgba(15, 23, 42, .6); position: sticky; top: 0; backdrop-filter: blur(10px); }
+      header h1 { margin: 0; font-size: 16px; font-weight: 650; }
+      header .sub { margin-top: 4px; font-size: 12px; color: #9ca3af; line-height: 1.4; }
+      main { padding: 18px; max-width: 1200px; margin: 0 auto; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+      .card { border: 1px solid rgba(255,255,255,.08); border-radius: 12px; background: rgba(2, 6, 23, .55); }
+      .card h2 { margin: 0; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 14px; }
+      .card .body { padding: 12px 14px; }
+      .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      .row > * { flex: 0 0 auto; }
+      button { background: #10b981; color: #04110b; border: 0; border-radius: 10px; padding: 9px 12px; font-weight: 650; cursor: pointer; }
+      button.secondary { background: #1f2937; color: #e5e7eb; border: 1px solid rgba(255,255,255,.10); }
+      button:disabled { opacity: .5; cursor: not-allowed; }
+      input, select { background: rgba(255,255,255,.06); color: #e5e7eb; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; padding: 9px 10px; outline: none; }
+      input::placeholder { color: rgba(229,231,235,.55); }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 8px 8px; border-bottom: 1px solid rgba(255,255,255,.08); text-align: left; vertical-align: top; font-size: 12px; }
+      th { color: #cbd5e1; font-weight: 650; }
+      .muted { color: #94a3b8; font-size: 12px; }
+      .tag { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: 12px; border: 1px solid rgba(255,255,255,.12); color: #cbd5e1; }
+      .tag.ok { border-color: rgba(16,185,129,.45); color: #34d399; }
+      .tag.bad { border-color: rgba(239,68,68,.45); color: #fb7185; }
+      .status { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; line-height: 1.4; background: rgba(255,255,255,.04); padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.08); }
+      .hint { margin-top: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(59,130,246,.25); background: rgba(59,130,246,.08); color: #dbeafe; font-size: 12px; line-height: 1.5; }
+      .small { font-size: 12px; }
+      code { color: #93c5fd; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>全网分发中心（轻量版）</h1>
+      <div class="sub">
+        如果你看到这个页面，说明分发后端服务已启动。<br />
+        账号 Cookie 建议在主程序「设置 → 全网分发账号」里管理；此页面用于快速检查账号/文件、手动触发发布。
+      </div>
+    </header>
+
+    <main>
+      <div class="grid">
+        <section class="card">
+          <h2>账号</h2>
+          <div class="body">
+            <div class="row">
+              <button id="btnRefreshAccounts">刷新账号列表</button>
+              <button id="btnRefreshValidAccounts" class="secondary">校验 Cookie（慢）</button>
+              <span class="muted">选择要发布的账号（可多选）</span>
+            </div>
+            <div style="margin-top: 10px; overflow: auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width: 46px;">选</th>
+                    <th style="width: 86px;">平台</th>
+                    <th>账号</th>
+                    <th style="width: 86px;">状态</th>
+                    <th>Cookie 文件</th>
+                  </tr>
+                </thead>
+                <tbody id="accountsBody">
+                  <tr><td colspan="5" class="muted">点击「刷新账号列表」加载…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>视频文件</h2>
+          <div class="body">
+            <div class="row">
+              <button id="btnRefreshFiles">刷新文件列表</button>
+              <span class="muted">选择要发布的视频（可多选）</span>
+            </div>
+            <div style="margin-top: 10px; overflow: auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width: 46px;">选</th>
+                    <th>文件名</th>
+                    <th style="width: 92px;">大小(MB)</th>
+                    <th>存储名</th>
+                  </tr>
+                </thead>
+                <tbody id="filesBody">
+                  <tr><td colspan="4" class="muted">点击「刷新文件列表」加载…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card" style="margin-top: 14px;">
+        <h2>上传视频到分发中心（可选）</h2>
+        <div class="body">
+          <div class="row">
+            <input id="uploadFilename" placeholder="自定义文件名（可选）" style="min-width: 260px;" />
+            <input id="uploadFile" type="file" accept="video/*" />
+            <button id="btnUpload">上传</button>
+            <span class="muted">上传后会出现在「视频文件」列表中</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top: 14px;">
+        <h2>一键发布（调用 /postVideo）</h2>
+        <div class="body">
+          <div class="row">
+            <label class="small">平台：</label>
+            <select id="platformType">
+              <option value="3">抖音</option>
+              <option value="2">视频号</option>
+              <option value="1">小红书</option>
+              <option value="4">快手</option>
+            </select>
+            <label class="small">标题：</label>
+            <input id="title" placeholder="可选（建议在主程序里自动生成后导入）" style="flex: 1 1 360px; min-width: 260px;" />
+            <label class="small">标签：</label>
+            <input id="tags" placeholder="如：搞钱 互联网运营（空格分隔）" style="flex: 1 1 320px; min-width: 220px;" />
+          </div>
+
+          <div class="hint">
+            提示：此页面仅做最小可用功能。更完整的「自动导入成片/批量发布」建议仍在主程序里完成。<br />
+            如果发布失败，请回到主程序查看日志（关键词：<code>[publish]</code> / <code>social-auto-upload</code>）。
+          </div>
+
+          <div class="row" style="margin-top: 12px;">
+            <button id="btnPost">开始发布</button>
+            <button id="btnClear" class="secondary">清空选择</button>
+          </div>
+
+          <div style="margin-top: 10px;">
+            <div class="muted" style="margin-bottom: 6px;">状态</div>
+            <div id="status" class="status">就绪</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const el = (id) => document.getElementById(id)
+      const statusEl = el('status')
+      const setStatus = (msg) => { statusEl.textContent = msg }
+
+      const platformLabel = (type) => {
+        const t = Number(type)
+        if (t === 1) return '小红书'
+        if (t === 2) return '视频号'
+        if (t === 3) return '抖音'
+        if (t === 4) return '快手'
+        return String(type)
+      }
+
+      let accounts = []
+      let files = []
+      const selectedAccountFilePaths = new Set()
+      const selectedVideoFilePaths = new Set()
+
+      const escapeHtml = (s) => String(s)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;')
+
+      const fetchJson = async (path, options) => {
+        const res = await fetch(path, options)
+        const text = await res.text()
+        let data
+        try { data = JSON.parse(text) } catch { data = { raw: text } }
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${text.slice(0, 200)}`)
+        return data
+      }
+
+      const renderAccounts = () => {
+        const tbody = el('accountsBody')
+        if (!accounts || accounts.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="muted">暂无账号（请在主程序「设置 → 全网分发账号」里保存并应用）</td></tr>'
+          return
+        }
+        tbody.innerHTML = accounts.map((row) => {
+          const type = row[1]
+          const filePath = row[2] || ''
+          const userName = row[3] || ''
+          const ok = Number(row[4]) === 1
+          const checked = selectedAccountFilePaths.has(filePath) ? 'checked' : ''
+          const disabled = filePath ? '' : 'disabled'
+          const status = ok ? '<span class="tag ok">可用</span>' : '<span class="tag bad">不可用</span>'
+          return `
+            <tr>
+              <td>
+                <input type="checkbox" data-acc="${encodeURIComponent(filePath)}" ${checked} ${disabled} />
+              </td>
+              <td>${platformLabel(type)}</td>
+              <td>${escapeHtml(userName)}</td>
+              <td>${status}</td>
+              <td class="muted">${escapeHtml(filePath || '(未绑定 cookie 文件)')}</td>
+            </tr>
+          `
+        }).join('')
+        tbody.querySelectorAll('input[type="checkbox"][data-acc]').forEach((cb) => {
+          cb.addEventListener('change', (e) => {
+            const v = decodeURIComponent(e.target.getAttribute('data-acc') || '')
+            if (!v) return
+            if (e.target.checked) selectedAccountFilePaths.add(v)
+            else selectedAccountFilePaths.delete(v)
+          })
+        })
+      }
+
+      const renderFiles = () => {
+        const tbody = el('filesBody')
+        if (!files || files.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">暂无文件（可先在主程序导入成片，或在此处上传）</td></tr>'
+          return
+        }
+        tbody.innerHTML = files.map((row) => {
+          const filename = row.filename || ''
+          const filePath = row.file_path || ''
+          const size = row.filesize ?? ''
+          const checked = selectedVideoFilePaths.has(filePath) ? 'checked' : ''
+          return `
+            <tr>
+              <td><input type="checkbox" data-file="${encodeURIComponent(filePath)}" ${checked} /></td>
+              <td>${escapeHtml(filename)}</td>
+              <td>${escapeHtml(String(size))}</td>
+              <td class="muted">${escapeHtml(filePath)}</td>
+            </tr>
+          `
+        }).join('')
+        tbody.querySelectorAll('input[type="checkbox"][data-file]').forEach((cb) => {
+          cb.addEventListener('change', (e) => {
+            const v = decodeURIComponent(e.target.getAttribute('data-file') || '')
+            if (!v) return
+            if (e.target.checked) selectedVideoFilePaths.add(v)
+            else selectedVideoFilePaths.delete(v)
+          })
+        })
+      }
+
+      const refreshAccounts = async () => {
+        setStatus('正在刷新账号…')
+        const data = await fetchJson('/getAccounts')
+        accounts = Array.isArray(data?.data) ? data.data : []
+        renderAccounts()
+        setStatus(`账号已刷新：${accounts.length} 条`)
+      }
+
+      const refreshValidAccounts = async () => {
+        setStatus('正在校验 Cookie（可能需要几十秒）…')
+        const data = await fetchJson('/getValidAccounts')
+        accounts = Array.isArray(data?.data) ? data.data : []
+        renderAccounts()
+        setStatus(`校验完成：${accounts.length} 条`)
+      }
+
+      const refreshFiles = async () => {
+        setStatus('正在刷新文件…')
+        const data = await fetchJson('/getFiles')
+        files = Array.isArray(data?.data) ? data.data : []
+        renderFiles()
+        setStatus(`文件已刷新：${files.length} 条`)
+      }
+
+      const uploadVideo = async () => {
+        const fileInput = el('uploadFile')
+        const f = fileInput.files && fileInput.files[0]
+        if (!f) { alert('请选择一个视频文件'); return }
+        const form = new FormData()
+        form.append('file', f)
+        const customName = (el('uploadFilename').value || '').trim()
+        if (customName) form.append('filename', customName)
+        setStatus('正在上传…')
+        const res = await fetch('/uploadSave', { method: 'POST', body: form })
+        const text = await res.text()
+        if (!res.ok) throw new Error(text.slice(0, 400))
+        setStatus('上传完成，正在刷新文件列表…')
+        await refreshFiles()
+      }
+
+      const postVideo = async () => {
+        const fileList = Array.from(selectedVideoFilePaths)
+        const accountList = Array.from(selectedAccountFilePaths)
+        if (accountList.length === 0) { alert('请先在「账号」里选择至少 1 个账号'); return }
+        if (fileList.length === 0) { alert('请先在「视频文件」里选择至少 1 个视频'); return }
+        const type = Number(el('platformType').value || '3')
+        const title = (el('title').value || '').trim() || '成片发布'
+        const tagsInput = (el('tags').value || '').trim()
+        const tags = tagsInput ? tagsInput.split(/\\s+/g).filter(Boolean) : []
+
+        setStatus('正在提交发布任务…（此接口会立即返回，实际上传在后台执行）')
+        const payload = { fileList, accountList, type, title, tags, category: 0, enableTimer: false }
+        const data = await fetchJson('/postVideo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        setStatus(`已提交：code=${data?.code ?? 'unknown'}。请在主程序查看上传日志/结果。`)
+      }
+
+      const clearSelection = () => {
+        selectedAccountFilePaths.clear()
+        selectedVideoFilePaths.clear()
+        renderAccounts()
+        renderFiles()
+        setStatus('已清空选择')
+      }
+
+      el('btnRefreshAccounts').addEventListener('click', () => refreshAccounts().catch(e => setStatus('刷新账号失败：' + e.message)))
+      el('btnRefreshValidAccounts').addEventListener('click', () => refreshValidAccounts().catch(e => setStatus('校验失败：' + e.message)))
+      el('btnRefreshFiles').addEventListener('click', () => refreshFiles().catch(e => setStatus('刷新文件失败：' + e.message)))
+      el('btnUpload').addEventListener('click', () => uploadVideo().catch(e => setStatus('上传失败：' + e.message)))
+      el('btnPost').addEventListener('click', () => postVideo().catch(e => setStatus('发布失败：' + e.message)))
+      el('btnClear').addEventListener('click', () => clearSelection())
+
+      Promise.allSettled([refreshAccounts(), refreshFiles()]).catch(() => {})
+    </script>
+  </body>
+</html>
+

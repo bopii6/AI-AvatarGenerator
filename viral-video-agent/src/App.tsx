@@ -4,6 +4,7 @@ import {
     DownloadOutlined,
     UserOutlined,
     SettingOutlined,
+    BugOutlined,
     CopyOutlined,
     RocketOutlined,
     LockOutlined,
@@ -15,6 +16,7 @@ import VoiceCloneSettings from './components/VoiceCloneSettings'
 import ApiKeySettings from './components/ApiKeySettings'
 import ServerSettings from './components/ServerSettings'
 import ProfileVideoSelector from './components/ProfileVideoSelector'
+import CloudServiceStatus from './components/CloudServiceStatus'
 
 // 步骤面板组件
 import CopywritingPanel from './components/panels/CopywritingPanel'
@@ -30,6 +32,14 @@ import PreviewPanel from './components/PreviewPanel'
 function App() {
     const [isTracking, setIsTracking] = useState(false)
     const [settingsOpen, setSettingsOpen] = useState(false)
+    const [adminEnabled, setAdminEnabled] = useState(false)
+    const [publishOnlyMode, setPublishOnlyMode] = useState(() => {
+        try {
+            return localStorage.getItem('vva_publish_only_mode') === '1'
+        } catch {
+            return false
+        }
+    })
     const [parseMode, setParseMode] = useState<'single' | 'profile' | null>(null)
     const [profileModalOpen, setProfileModalOpen] = useState(false)
     const [profileLoading, setProfileLoading] = useState(false)
@@ -58,8 +68,6 @@ function App() {
         digitalHumanProgress,
         digitalHumanProgressText,
         finalVideoPath,
-        coverPath,
-        titles,
     } = useAppStore()
 
     useEffect(() => {
@@ -73,6 +81,34 @@ function App() {
             if (removeListener) removeListener()
         }
     }, [])
+
+    useEffect(() => {
+        const loadRuntimeFlags = async () => {
+            try {
+                const res = await window.electronAPI?.invoke('config-get')
+                if (res?.success && res.data) {
+                    setAdminEnabled(!!res.data.adminEnabled)
+                }
+            } catch {
+                // ignore
+            }
+        }
+        loadRuntimeFlags()
+    }, [])
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('vva_publish_only_mode', publishOnlyMode ? '1' : '0')
+        } catch {
+            // ignore
+        }
+    }, [publishOnlyMode])
+
+    useEffect(() => {
+        if (publishOnlyMode) {
+            setActiveKey('publish')
+        }
+    }, [publishOnlyMode, setActiveKey])
 
     // Tab 切换（语音走云端 API，数字人走独立 GPU 服务，无需服务切换/等待）
     const handleTabChange = useCallback((key: string) => {
@@ -219,14 +255,14 @@ function App() {
         { key: 'material', title: '🔍 找对标', subtitle: '找到爆款视频', done: !!(videoPath || finalVideoPath || inputAudioPath) },
         { key: 'rewrite', title: '✨ 变原创', subtitle: 'AI改写成你的', done: !!rewrittenCopy },
         { key: 'digitalHuman', title: '🎭 数字人', subtitle: '生成AI分身', done: !!digitalHumanVideoPath },
-        { key: 'publish', title: '🚀 一键发', subtitle: '全网自动分发', done: !!(coverPath && titles?.length) },
+        { key: 'publish', title: '🚀 一键发', subtitle: '全网自动分发', done: !!finalVideoPath },
     ]
 
     // audio 面板属于「数字人」步骤的子流程：侧栏仍高亮在数字人，避免用户误以为跳回“找对标”
     const sidebarKey = activeKey === 'audio' ? 'digitalHuman' : activeKey
 
     const activeIndex = Math.max(0, progressItems.findIndex((i) => i.key === sidebarKey))
-    const maxUnlockedIndex = (() => {
+    const maxUnlockedIndex = publishOnlyMode ? (progressItems.length - 1) : (() => {
         let idx = 0
         for (let i = 1; i < progressItems.length; i += 1) {
             if (progressItems[i - 1].done) idx = i
@@ -479,6 +515,29 @@ function App() {
                             </Button>
                         </Tooltip>
                     )}
+                    <Space size={8} style={{ marginRight: 12 }}>
+                        <CloudServiceStatus kind="voice" />
+                        <CloudServiceStatus kind="gpu" />
+                    </Space>
+                    <Tooltip title={publishOnlyMode ? '已开启：仅测试发布（跳过前置步骤）' : '仅测试发布：跳过前置步骤，直达「一键发」'}>
+                        <Button
+                            size="large"
+                            type={publishOnlyMode ? 'primary' : 'default'}
+                            icon={<BugOutlined />}
+                            onClick={() => {
+                                const next = !publishOnlyMode
+                                setPublishOnlyMode(next)
+                                if (next) {
+                                    message.info('已开启仅测试发布模式：可直接进入「一键发」，并在发布页选择本地视频测试发布。')
+                                } else {
+                                    message.info('已关闭仅测试发布模式。')
+                                }
+                            }}
+                            style={{ marginRight: 12 }}
+                        >
+                            测试发布
+                        </Button>
+                    </Tooltip>
                     <Button
                         size="large"
                         icon={<SettingOutlined />}
@@ -495,7 +554,7 @@ function App() {
                 <aside className="sidebar">
                     <div style={{ marginBottom: 32 }}>
                         <Typography.Text strong style={{ fontSize: 16, color: 'var(--accent)' }}>
-                            当前第 {activeIndex + 1} 步 / 共 {progressItems.length} 步
+                            当前第 {activeIndex + 1} 步 / 共 {progressItems.length} 步{publishOnlyMode ? '（测试发布模式）' : ''}
                         </Typography.Text>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -662,7 +721,7 @@ function App() {
                         { key: 'cookie', label: '全网分发账号', children: <CookieSettings /> },
                         { key: 'voice', label: '声音克隆', children: <VoiceCloneSettings /> },
                         { key: 'auth', label: '语音 API', children: <ApiKeySettings /> },
-                        { key: 'server', label: '服务器设置', children: <ServerSettings /> },
+                        ...(adminEnabled ? [{ key: 'server', label: '服务器设置', children: <ServerSettings /> }] : []),
                     ]}
                 />
             </Modal>

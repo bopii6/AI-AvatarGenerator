@@ -65,7 +65,7 @@ export interface PipelineState {
 
     // 数字人视频路径
     digitalHumanVideoPath: string | null
-    setDigitalHumanVideoPath: (path: string) => void
+    setDigitalHumanVideoPath: (path: string | null) => void
 
     // 字幕文件路径
     subtitlePath: string | null

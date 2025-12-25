@@ -49,6 +49,7 @@ function extFromMime(mimeType: string | undefined): string {
 export default function VoiceCloneSettings() {
     const [models, setModels] = useState<VoiceModel[]>([])
     const [loadingModels, setLoadingModels] = useState(false)
+    const [aliases, setAliases] = useState<Record<string, string>>({})
 
     const [voiceName, setVoiceName] = useState('')
 
@@ -94,6 +95,26 @@ export default function VoiceCloneSettings() {
     }
 
     useEffect(() => () => cleanupRecording(), [])
+
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem('voice.aliases')
+            if (raw) setAliases(JSON.parse(raw) || {})
+        } catch {
+            setAliases({})
+        }
+    }, [])
+
+    const upsertAlias = (voiceId: string, nextName: string) => {
+        const trimmed = (nextName || '').trim()
+        setAliases((prev) => {
+            const next = { ...prev }
+            if (!trimmed) delete next[voiceId]
+            else next[voiceId] = trimmed
+            try { localStorage.setItem('voice.aliases', JSON.stringify(next)) } catch { /* ignore */ }
+            return next
+        })
+    }
 
     const loadModels = async () => {
         if (loadingModels) return
@@ -217,6 +238,9 @@ export default function VoiceCloneSettings() {
             const voiceId = String(res.data?.voiceId || '').trim()
             if (!voiceId) throw new Error('未返回 voiceId')
 
+            // 用用户输入的名字作为“显示名”（本地持久化），实现一一对应
+            upsertAlias(voiceId, name)
+
             setCreatingVoiceId(voiceId)
             setProgress(10)
             setProgressText('已提交，等待创建...')
@@ -262,6 +286,10 @@ export default function VoiceCloneSettings() {
                             onChange={(e) => setVoiceName(e.target.value)}
                             disabled={creating}
                         />
+
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            提示：上面输入的“音色名称”就是该录音生成的音色显示名；云端只保存一个受限前缀（最多 10 位），但本地会用你输入的名字来展示，列表里同时显示 ID 方便区分。
+                        </Typography.Text>
 
                         <Space wrap>
                             {!recording ? (
@@ -327,7 +355,7 @@ export default function VoiceCloneSettings() {
                                         <Tag color={m.status === 'ready' ? 'green' : m.status === 'failed' ? 'red' : 'blue'}>
                                             {m.status}
                                         </Tag>
-                                        <span style={{ fontWeight: 600 }}>{m.name}</span>
+                                        <Typography.Text strong>{aliases[m.id] || m.name}</Typography.Text>
                                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                                             {m.id}
                                         </Typography.Text>
@@ -346,4 +374,3 @@ export default function VoiceCloneSettings() {
         </Card>
     )
 }
-

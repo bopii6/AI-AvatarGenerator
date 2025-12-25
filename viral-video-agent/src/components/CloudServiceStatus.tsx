@@ -16,8 +16,8 @@ export default function CloudServiceStatus(props: { kind: ServiceKind; style?: C
     const [loading, setLoading] = useState(true)
     const [status, setStatus] = useState<ServiceStatus | null>(null)
 
-    const refresh = useCallback(async () => {
-        setLoading(true)
+    const refresh = useCallback(async (opts?: { silent?: boolean }) => {
+        if (!opts?.silent) setLoading(true)
         try {
             const channel = kind === 'voice' ? 'cloud-voice-check-status' : 'cloud-gpu-check-status'
             const res = await window.electronAPI?.invoke(channel)
@@ -29,12 +29,16 @@ export default function CloudServiceStatus(props: { kind: ServiceKind; style?: C
         } catch (e: any) {
             setStatus({ online: false, message: e?.message || '连接失败' })
         } finally {
-            setLoading(false)
+            if (!opts?.silent) setLoading(false)
         }
     }, [kind])
 
     useEffect(() => {
         refresh()
+        const timer = setInterval(() => {
+            refresh({ silent: true })
+        }, 30000)
+        return () => clearInterval(timer)
     }, [refresh])
 
     const text = (() => {
@@ -83,6 +87,7 @@ export default function CloudServiceStatus(props: { kind: ServiceKind; style?: C
                 borderRadius: 999,
                 background: bg,
                 border,
+                cursor: 'pointer',
                 ...style,
             }}
         >
@@ -93,5 +98,6 @@ export default function CloudServiceStatus(props: { kind: ServiceKind; style?: C
         </div>
     )
 
-    return tooltip ? <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>}>{content}</Tooltip> : content
+    const node = tooltip ? <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>}>{content}</Tooltip> : content
+    return <span onClick={() => refresh()}>{node}</span>
 }

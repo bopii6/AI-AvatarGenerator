@@ -5,7 +5,9 @@ services:
     container_name: duix-avatar-gen-video
     restart: always
     gpus:
-      - all
+      - driver: nvidia
+        count: all
+        capabilities: [gpu]
     command: ["python", "/code/app_local.py"]
     networks: [duix-net]
     volumes:
@@ -27,6 +29,9 @@ services:
     image: nginx:alpine
     container_name: duix-proxy
     restart: always
+    depends_on:
+      - duix-avatar-gen-video
+      - duix-file-api
     networks: [duix-net]
     ports:
       - "8383:8383"

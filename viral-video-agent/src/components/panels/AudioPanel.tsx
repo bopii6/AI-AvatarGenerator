@@ -24,7 +24,6 @@ export default function AudioPanel() {
     const {
         rewrittenCopy,
         originalCopy,
-        batchCopies,
         digitalHumanSelectedCopy,
         digitalHumanScriptConfirmed,
         audioPath,
@@ -33,8 +32,8 @@ export default function AudioPanel() {
         setActiveKey,
     } = useAppStore()
 
-    const needsTranscriptConfirm = batchCopies.length > 1
-    const transcriptConfirmed = !needsTranscriptConfirm || digitalHumanScriptConfirmed
+    // 逐字稿始终需要在「数字人」步骤里点击确认后，才允许生成音频
+    const transcriptConfirmed = digitalHumanScriptConfirmed
     const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
 
     useEffect(() => {
@@ -53,7 +52,26 @@ export default function AudioPanel() {
         try {
             const res = await window.electronAPI?.invoke('cloud-voice-list-models')
             if (res?.success && Array.isArray(res.data)) {
-                setModels(res.data)
+                let aliases: Record<string, string> = {}
+                try {
+                    const raw = localStorage.getItem('voice.aliases')
+                    if (raw) aliases = JSON.parse(raw) || {}
+                } catch { /* ignore */ }
+
+                setModels(
+                    res.data.map((m: VoiceModel) => ({
+                        ...m,
+                        name: (() => {
+                            const id = (m.id || '').trim()
+                            const baseName = (id && aliases[id]) ? String(aliases[id]) : m.name
+                            if (!id) return baseName
+                            const lastSeg = id.split('-').pop() || ''
+                            const short = lastSeg.slice(0, 6) || id.slice(-6)
+                            if (!short) return baseName
+                            return baseName.includes(short) ? baseName : `${baseName} (${short})`
+                        })(),
+                    }))
+                )
                 return
             }
             setModels([])
@@ -72,7 +90,7 @@ export default function AudioPanel() {
             return
         }
         if (!transcriptConfirmed) {
-            message.warning('请先在「数字人」中确认要用于出片的逐字稿')
+            message.warning('请先在「数字人」里编辑逐字稿并点击「确认用于出片」')
             return
         }
         if (!selectedVoiceId) {
@@ -110,7 +128,7 @@ export default function AudioPanel() {
 
                 {!transcriptConfirmed && (
                     <div style={{ padding: 12, background: '#fffbe6', borderRadius: 8, border: '1px solid #ffe58f' }}>
-                        请先在「数字人」里确认逐字稿（出片用哪一条）。
+                        请先在「数字人」里编辑逐字稿并点击「确认用于出片」。
                     </div>
                 )}
 
@@ -185,4 +203,3 @@ export default function AudioPanel() {
         </div>
     )
 }
-

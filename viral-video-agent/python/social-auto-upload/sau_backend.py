@@ -406,26 +406,31 @@ def postVideo():
     # 打印获取到的数据（仅作为示例）
     print("File List:", file_list)
     print("Account List:", account_list)
-    match type:
-        case 1:
-            post_video_xhs(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                               start_days)
-        case 2:
-            post_video_tencent(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                               start_days, is_draft)
-        case 3:
-            post_video_DouYin(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                      start_days, thumbnail_path, productLink, productTitle)
-        case 4:
-            post_video_ks(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
-                      start_days)
-    # 返回响应给客户端
-    return jsonify(
-        {
-            "code": 200,
-            "msg": None,
-            "data": None
-        }), 200
+    try:
+        match type:
+            case 1:
+                post_video_xhs(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
+                                   start_days)
+            case 2:
+                post_video_tencent(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
+                                   start_days, is_draft)
+            case 3:
+                post_video_DouYin(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
+                          start_days, thumbnail_path, productLink, productTitle)
+            case 4:
+                post_video_ks(title, file_list, tags, account_list, category, enableTimer, videos_per_day, daily_times,
+                          start_days)
+            case _:
+                return jsonify({"code": 400, "msg": f"unsupported type: {type}", "data": None}), 400
+
+        return jsonify({"code": 200, "msg": None, "data": None}), 200
+    except Exception as e:
+        msg = str(e or "")
+        low = msg.lower()
+        # When user closes the browser window during login/upload, playwright raises "Target closed"/"Page closed"...
+        if "target closed" in low or "browser has been closed" in low or "page closed" in low:
+            return jsonify({"code": 499, "msg": "用户关闭了抖音登录/发布窗口，本次发布已取消。", "data": None}), 499
+        return jsonify({"code": 500, "msg": msg[:2000], "data": None}), 500
 
 
 @app.route('/updateUserinfo', methods=['POST'])

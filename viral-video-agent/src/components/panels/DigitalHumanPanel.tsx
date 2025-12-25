@@ -187,8 +187,8 @@ function DigitalHumanPanel() {
         }]
     }, [batchCopies, batchRewrittenCopies, digitalHumanSelectedCopy?.copy, digitalHumanSelectedCopy?.title, originalCopy, rewrittenCopy])
 
-    const needsTranscriptConfirm = transcriptCandidates.length > 1
-    const transcriptConfirmed = !needsTranscriptConfirm || digitalHumanScriptConfirmed
+    // 逐字稿始终需要用户点击确认：编辑完成后再“确认用于合成”，才会进入音频/视频生成
+    const transcriptConfirmed = digitalHumanScriptConfirmed
 
     const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
     const hasText = textToSpeak.length > 0
@@ -202,19 +202,10 @@ function DigitalHumanPanel() {
 
         if (!matched) {
             setDigitalHumanSelectedCopy({ title: transcriptCandidates[0].title, copy: transcriptCandidates[0].copy })
-            if (transcriptCandidates.length <= 1) {
-                setDigitalHumanScriptConfirmed(true)
-            }
             return
         }
-
-        if (transcriptCandidates.length <= 1 && !digitalHumanScriptConfirmed) {
-            setDigitalHumanScriptConfirmed(true)
-        }
     }, [
-        digitalHumanScriptConfirmed,
         digitalHumanSelectedCopy?.title,
-        setDigitalHumanScriptConfirmed,
         setDigitalHumanSelectedCopy,
         transcriptCandidates,
     ])
@@ -341,7 +332,7 @@ function DigitalHumanPanel() {
             return
         }
         if (!transcriptConfirmed) {
-            message.warning('请先确认要用于出片的逐字稿')
+            message.warning('请先编辑逐字稿并点击「确认用于出片」')
             return
         }
 
@@ -491,17 +482,15 @@ function DigitalHumanPanel() {
                                         <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
                                             逐字稿（先确认）
                                         </Typography.Text>
-                                        {needsTranscriptConfirm && (
-                                            <Tag color={transcriptConfirmed ? 'green' : 'orange'} style={{ marginInlineStart: 4 }}>
-                                                {transcriptConfirmed ? '已确认' : '待确认'}
-                                            </Tag>
-                                        )}
+                                        <Tag color={transcriptConfirmed ? 'green' : 'orange'} style={{ marginInlineStart: 4 }}>
+                                            {transcriptConfirmed ? '已确认' : '待确认'}
+                                        </Tag>
                                     </div>
                                     <Space size={8}>
                                         <Button
                                             size="small"
                                             onClick={async () => {
-                                                const text = (digitalHumanSelectedCopy?.copy || '').trim()
+                                                const text = (digitalHumanSelectedCopy?.copy || textToSpeak || '').trim()
                                                 if (!text) {
                                                     message.warning('没有可复制的逐字稿')
                                                     return
@@ -516,12 +505,13 @@ function DigitalHumanPanel() {
                                         >
                                             复制
                                         </Button>
-                                        {needsTranscriptConfirm && !digitalHumanScriptConfirmed && (
+                                        {!digitalHumanScriptConfirmed && (
                                             <Button
                                                 type="primary"
                                                 size="small"
                                                 onClick={() => {
-                                                    if (!textToSpeak) {
+                                                    const draftText = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
+                                                    if (!draftText) {
                                                         message.warning('逐字稿为空，无法确认')
                                                         return
                                                     }
@@ -545,6 +535,8 @@ function DigitalHumanPanel() {
                                             onChange={(title) => {
                                                 const next = transcriptCandidates.find(c => c.title === title)
                                                 if (!next) return
+                                                if (audioPath) setAudioPath(null)
+                                                if (digitalHumanVideoPath) setDigitalHumanVideoPath(null)
                                                 setDigitalHumanSelectedCopy({ title: next.title, copy: next.copy })
                                             }}
                                             style={{ width: '100%' }}
@@ -569,15 +561,18 @@ function DigitalHumanPanel() {
                                     value={digitalHumanSelectedCopy?.copy ?? textToSpeak}
                                     onChange={(e) => {
                                         const title = (digitalHumanSelectedCopy?.title || transcriptCandidates[0]?.title || '逐字稿').trim()
+                                        // 文案变更后，必须重新确认；已生成的音频/视频也会失效，避免出片内容不一致
+                                        if (audioPath) setAudioPath(null)
+                                        if (digitalHumanVideoPath) setDigitalHumanVideoPath(null)
                                         setDigitalHumanSelectedCopy({ title, copy: e.target.value })
                                     }}
-                                    placeholder="这里会展示逐字稿内容（可编辑）。多份逐字稿时请先选择并确认。"
+                                    placeholder="这里会展示逐字稿内容（可编辑）。编辑完成后请点击上方「确认用于出片」。"
                                     autoSize={{ minRows: 6, maxRows: 12 }}
                                 />
 
-                                {needsTranscriptConfirm && !digitalHumanScriptConfirmed && (
+                                {!digitalHumanScriptConfirmed && (
                                     <Typography.Text type="secondary" style={{ display: 'block', marginTop: 10, fontSize: 12 }}>
-                                        为避免选错文案：请选择逐字稿后，点击上方「确认用于出片」再进入音频生成。
+                                        编辑好逐字稿后，点击上方「确认用于出片」再进入音频生成。
                                     </Typography.Text>
                                 )}
                             </Card>

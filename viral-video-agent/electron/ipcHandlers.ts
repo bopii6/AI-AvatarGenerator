@@ -24,7 +24,7 @@ import { spawn, spawnSync } from 'child_process'
 import http from 'http'
 import fs from 'fs'
 import FormData from 'form-data'
-import { randomBytes, randomUUID } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import ffmpegPath from 'ffmpeg-static'
 
 let socialAutoUploadProc: ReturnType<typeof spawn> | null = null
@@ -61,6 +61,97 @@ function convertAudioToWavIfNeeded(sourcePath: string): string {
         throw new Error(`音频转码失败：${err.trim()}`)
     }
     return outputPath
+}
+
+function convertAudioToDuixWavPcm16k(sourcePath: string, tempDir: string): string {
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true })
+    const outputPath = path.join(tempDir, `duix_audio_${Date.now()}_${uuidv4()}.wav`)
+    const args = [
+        '-y',
+        '-i', sourcePath,
+        '-ar', '16000',
+        '-ac', '1',
+        '-c:a', 'pcm_s16le',
+        outputPath,
+    ]
+    const result = spawnSync(ffmpegExecutable, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    if (result.status !== 0) {
+        const err = (result.stderr || result.stdout || '').toString('utf8')
+        throw new Error(`音频转码失败：${err.trim()}`)
+    }
+    return outputPath
+}
+
+function splitTextForTts(input: string, maxChunkChars: number): string[] {
+    const text = (input || '').trim()
+    if (!text) return []
+    if (text.length <= maxChunkChars) return [text]
+
+    const rawParts = text
+        .replace(/\r\n/g, '\n')
+        .split(/(?<=[。！？!?；;，,])|\n+/)
+        .map(s => s.trim())
+        .filter(Boolean)
+
+    const chunks: string[] = []
+    let current = ''
+
+    const pushCurrent = () => {
+        const v = current.trim()
+        if (v) chunks.push(v)
+        current = ''
+    }
+
+    for (const part of rawParts) {
+        if (!part) continue
+        if (part.length > maxChunkChars) {
+            pushCurrent()
+            for (let i = 0; i < part.length; i += maxChunkChars) {
+                chunks.push(part.slice(i, i + maxChunkChars))
+            }
+            continue
+        }
+
+        const candidate = current ? `${current} ${part}` : part
+        if (candidate.length > maxChunkChars) {
+            pushCurrent()
+            current = part
+        } else {
+            current = candidate
+        }
+    }
+
+    pushCurrent()
+    return chunks.length ? chunks : [text]
+}
+
+function concatAudio(inputs: string[], outputPath: string): void {
+    if (!inputs?.length) throw new Error('音频合并失败：输入为空')
+    const outputDir = path.dirname(outputPath)
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true })
+
+    const listFile = path.join(outputDir, `ffmpeg_concat_${Date.now()}.txt`)
+    const content = inputs
+        .map(p => `file '${path.resolve(p).replace(/\\/g, '/').replace(/'/g, "'\\''")}'`)
+        .join('\n')
+    fs.writeFileSync(listFile, content, 'utf8')
+
+    const outExt = path.extname(outputPath).toLowerCase()
+    const args = ['-y', '-f', 'concat', '-safe', '0', '-i', listFile]
+    if (outExt === '.wav') {
+        args.push('-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le')
+    } else {
+        args.push('-c:a', 'libmp3lame', '-q:a', '4')
+    }
+    args.push(outputPath)
+    const result = spawnSync(ffmpegExecutable, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    try { fs.unlinkSync(listFile) } catch { /* ignore */ }
+    if (result.status !== 0) {
+        const err = (result.stderr || result.stdout || '').toString('utf8')
+        throw new Error(`音频合并失败：${err.trim()}`)
+    }
 }
 
 type PublishPlatformKey = 'douyin' | 'xiaohongshu' | 'shipinhao' | 'kuaishou'
@@ -241,6 +332,12 @@ function safeErrorMessage(error: any): string {
     return (msg || stack || '未知错误').toString()
 }
 
+function stripAnsi(input: string): string {
+    if (!input) return ''
+    // ANSI escape sequences (CSI + others)
+    return input.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
+}
+
 function getOrCreateDeviceId() {
     const filePath = path.join(app.getPath('userData'), 'device_id.txt')
     try {
@@ -310,11 +407,32 @@ function saveServerConfig(updated: Record<string, string>) {
 
 function getConfig(): PipelineConfig {
     const builtIn = getBuiltInConfig() as PipelineConfig
-    const runtime = readServerConfig()
+    let runtime = readServerConfig()
+
+    // 如果 .env 提供了云端 GPU 地址/端口，则优先生效，并同步覆盖到本地持久化配置，
+    // 避免用户曾在「设置」里保存过旧 IP，导致界面仍显示旧 endpoint。
+    const envCloudGpuUrl = (process.env.CLOUD_GPU_SERVER_URL || '').trim()
+    const envCloudGpuPort = (process.env.CLOUD_GPU_VIDEO_PORT || '').trim()
+    let shouldSyncRuntime = false
+    if (envCloudGpuUrl && envCloudGpuUrl !== (runtime.CLOUD_GPU_SERVER_URL || '').trim()) {
+        runtime = { ...runtime, CLOUD_GPU_SERVER_URL: envCloudGpuUrl }
+        shouldSyncRuntime = true
+    }
+    if (envCloudGpuPort && envCloudGpuPort !== (runtime.CLOUD_GPU_VIDEO_PORT || '').trim()) {
+        runtime = { ...runtime, CLOUD_GPU_VIDEO_PORT: envCloudGpuPort }
+        shouldSyncRuntime = true
+    }
+    if (shouldSyncRuntime) {
+        try {
+            saveServerConfig(runtime)
+        } catch {
+            // ignore
+        }
+    }
 
     // 合并运行时覆盖 (主要是 IP 和端口)
-    const cloudGpuUrl = runtime.CLOUD_GPU_SERVER_URL || process.env.CLOUD_GPU_SERVER_URL || ''
-    const cloudGpuPort = runtime.CLOUD_GPU_VIDEO_PORT || process.env.CLOUD_GPU_VIDEO_PORT || '8383'
+    const cloudGpuUrl = envCloudGpuUrl || (runtime.CLOUD_GPU_SERVER_URL || '').trim() || ''
+    const cloudGpuPort = envCloudGpuPort || (runtime.CLOUD_GPU_VIDEO_PORT || '').trim() || '8383'
 
     // 如果有设置 IP，则构造完整的 API URL
     if (cloudGpuUrl) {
@@ -347,8 +465,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     }
 
     const getCloudGpuRuntime = () => {
-        const serverUrlRaw = config.extra?.cloudGpuServerUrl || process.env.CLOUD_GPU_SERVER_URL || ''
-        const portRaw = config.extra?.cloudGpuVideoPort || process.env.CLOUD_GPU_VIDEO_PORT || '8383'
+        const serverUrlRaw = process.env.CLOUD_GPU_SERVER_URL || config.extra?.cloudGpuServerUrl || ''
+        const portRaw = process.env.CLOUD_GPU_VIDEO_PORT || config.extra?.cloudGpuVideoPort || '8383'
         const parsedPort = parseInt(portRaw, 10)
         const videoPort = Number.isFinite(parsedPort) ? parsedPort : 8383
         return {
@@ -403,7 +521,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 TENCENT_COS_VOICE_PREFIX: cosPrefix,
                 TENCENT_COS_SIGNED_URL_EXPIRES_SECONDS: cosSignedUrlExpiresSeconds ? String(cosSignedUrlExpiresSeconds) : '',
                 COVER_PROVIDER: full.coverProvider,
-                loadedEnvPath: process.env.VIRAL_VIDEO_AGENT_ENV_PATH_LOADED || 'Built-in'
+                loadedEnvPath: process.env.VIRAL_VIDEO_AGENT_ENV_PATH_LOADED || 'Built-in',
+                adminEnabled: ['1', 'true', 'yes', 'on'].includes((process.env.VIRAL_VIDEO_AGENT_ADMIN || '').trim().toLowerCase()),
             }
         }
     })
@@ -604,13 +723,47 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             const voiceId = (params?.voiceId || '').trim()
             if (!voiceId) throw new Error('voiceId 为空')
 
-            const { synthesizeSpeech } = await import('../src/services/aliyunVoiceService')
+            const { synthesizeSpeech, getVoice } = await import('../src/services/aliyunVoiceService')
             const { apiKey, model } = getAliyunVoiceRuntime()
+
+            try {
+                const voice = await getVoice({ apiKey, model }, voiceId)
+                if (!voice) {
+                    throw new Error('音色不存在或已删除，请在声音克隆里刷新列表')
+                }
+                if (voice.status !== 'ready') {
+                    throw new Error(`音色仍在训练中（当前状态: ${voice.status}）`)
+                }
+            } catch (checkErr: any) {
+                throw new Error(checkErr?.message || '音色状态检查失败，请稍后再试')
+            }
+
             const outputDir = path.join(app.getPath('userData'), 'cloud_voice_data', 'audio')
-            const outputPath = path.join(outputDir, `aliyun_voice_${Date.now()}.mp3`)
-            const audioPath = await synthesizeSpeech({ apiKey, model }, { voiceId, text, outputPath })
-            return { success: true, data: { audioPath } }
+            const outputPath = path.join(outputDir, `aliyun_voice_${Date.now()}.wav`)
+
+            const chunks = splitTextForTts(text, 220)
+            console.log('[cloud-voice-tts] text chars:', text.length, 'chunks:', chunks.length)
+
+            if (chunks.length <= 1) {
+                const audioPath = await synthesizeSpeech({ apiKey, model }, { voiceId, text, outputPath })
+                return { success: true, data: { audioPath } }
+            }
+
+            const partPaths: string[] = []
+            for (let i = 0; i < chunks.length; i++) {
+                const partOut = path.join(outputDir, `aliyun_voice_part_${Date.now()}_${i}.wav`)
+                const partPath = await synthesizeSpeech({ apiKey, model }, { voiceId, text: chunks[i], outputPath: partOut })
+                partPaths.push(partPath)
+            }
+
+            concatAudio(partPaths, outputPath)
+            for (const p of partPaths) {
+                try { fs.unlinkSync(p) } catch { /* ignore */ }
+            }
+
+            return { success: true, data: { audioPath: outputPath } }
         } catch (error: any) {
+            console.error('[cloud-voice-tts] failed', error)
             return { success: false, error: error.message }
         }
     })
@@ -1198,12 +1351,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         const confExamplePy = path.join(installDir, 'conf.example.py')
         const dbFile = path.join(installDir, 'db', 'database.db')
 
-        const run = (command: string, args: string[], cwd: string) => new Promise<void>((resolve, reject) => {
+        const run = (command: string, args: string[], cwd: string, envOverride?: NodeJS.ProcessEnv) => new Promise<void>((resolve, reject) => {
             const child = spawn(command, args, {
                 cwd,
                 stdio: 'pipe',
                 env: {
                     ...process.env,
+                    ...(envOverride ? envOverride : {}),
                     // 避免弹出 Git Credential Manager / 交互式认证窗口（客户体验灾难）
                     // 失败应当直接返回错误提示，由应用引导用户配置镜像或离线包。
                     GIT_TERMINAL_PROMPT: '0',
@@ -1284,24 +1438,168 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         if (!fs.existsSync(backendPy)) {
             fs.mkdirSync(path.dirname(installDir), { recursive: true })
 
-            // 直接使用内置版本（打包时一起分发，避免国内网络问题）
-            const bundledDir = path.join(app.getAppPath(), 'python', 'social-auto-upload')
-            const bundledMarker = path.join(bundledDir, 'requirements.txt')
+            const resolveBundledDir = () => {
+                // 在开发环境下优先使用当前工作区的脚本，确保改动即时生效；
+                // 打包后再回落到内置目录/资源目录。
+                const candidates: string[] = []
+                const pushCandidate = (p?: string) => {
+                    if (!p) return
+                    if (candidates.includes(p)) return
+                    candidates.push(p)
+                }
+                if (!app.isPackaged) {
+                    pushCandidate(path.join(process.cwd(), 'python', 'social-auto-upload'))
+                    pushCandidate(path.join(app.getAppPath(), '..', 'python', 'social-auto-upload'))
+                }
+                pushCandidate(path.join(app.getAppPath(), 'python', 'social-auto-upload'))
+                pushCandidate(path.join(process.resourcesPath || '', 'python', 'social-auto-upload'))
 
-            if (fs.existsSync(bundledMarker)) {
+                for (const cand of candidates) {
+                    if (cand && fs.existsSync(path.join(cand, 'requirements.txt'))) return { dir: cand, candidates }
+                }
+                return { dir: '', candidates }
+            }
+
+            // 直接使用内置版本（打包时一起分发，避免国内网络问题）
+            const { dir: bundledDir, candidates: bundledCandidates } = resolveBundledDir()
+            const bundledMarker = bundledDir ? path.join(bundledDir, 'requirements.txt') : ''
+
+            if (bundledMarker && fs.existsSync(bundledMarker)) {
                 logPublish('social-auto-upload:copy-bundled', { from: bundledDir, to: installDir })
                 fs.cpSync(bundledDir, installDir, { recursive: true })
             } else {
                 throw new Error(
                     `分发中心组件未找到。\n` +
                     `请确认项目包含 python/social-auto-upload 目录。\n` +
-                    `查找路径: ${bundledDir}`
+                    `查找路径(按顺序): ${bundledCandidates.join(' | ')}`
                 )
             }
         }
 
+        // Historical installs may miss the frontend entry (index.html), which makes the "distribution center" window show 404.
+        // Sync it from the bundled copy so users don't need to delete their userData directory manually.
+        try {
+            const resolveBundledDir = () => {
+                const candidates = [
+                    path.join(app.getAppPath(), 'python', 'social-auto-upload'),
+                    path.join(process.resourcesPath || '', 'python', 'social-auto-upload'),
+                    path.join(process.cwd(), 'python', 'social-auto-upload'),
+                ].filter(Boolean)
+                for (const cand of candidates) {
+                    if (cand && fs.existsSync(path.join(cand, 'requirements.txt'))) return { dir: cand, candidates }
+                }
+                return { dir: '', candidates }
+            }
+
+            const { dir: bundledDir, candidates: bundledCandidates } = resolveBundledDir()
+            if (!bundledDir) {
+                logPublish('social-auto-upload:bundled-missing', { candidates: bundledCandidates })
+                throw new Error('bundled social-auto-upload not found')
+            }
+            logPublish('social-auto-upload:bundled-dir', { dir: bundledDir })
+            const srcIndex = path.join(bundledDir, 'index.html')
+            const dstIndex = path.join(installDir, 'index.html')
+            if (fs.existsSync(srcIndex)) {
+                if (!fs.existsSync(dstIndex)) {
+                    fs.mkdirSync(path.dirname(dstIndex), { recursive: true })
+                    fs.copyFileSync(srcIndex, dstIndex)
+                } else {
+                    const s = fs.statSync(srcIndex)
+                    const d = fs.statSync(dstIndex)
+                    if (s.mtimeMs > d.mtimeMs) fs.copyFileSync(srcIndex, dstIndex)
+                }
+            }
+
+            // Sync patched uploader scripts (minimal set) so fixes take effect on existing installs.
+            const syncFiles = [
+                'sau_backend.py',
+                'uploader/douyin_uploader/main.py',
+            ]
+            for (const rel of syncFiles) {
+                const src = path.join(bundledDir, rel)
+                const dst = path.join(installDir, rel)
+                if (!fs.existsSync(src)) continue
+                try {
+                    const srcBuf = fs.readFileSync(src)
+                    const srcSha = createHash('sha256').update(srcBuf).digest('hex')
+
+                    let dstSha = ''
+                    if (fs.existsSync(dst)) {
+                        const dstBuf = fs.readFileSync(dst)
+                        dstSha = createHash('sha256').update(dstBuf).digest('hex')
+                    }
+
+                    if (srcSha !== dstSha) {
+                        fs.mkdirSync(path.dirname(dst), { recursive: true })
+                        fs.writeFileSync(dst, srcBuf)
+                        logPublish('social-auto-upload:sync-file', { rel, action: 'copied', srcSha, dstSha, src, dst })
+                    } else {
+                        logPublish('social-auto-upload:sync-file', { rel, action: 'skipped', srcSha, src, dst })
+                    }
+                } catch (e: any) {
+                    logPublish('social-auto-upload:sync-file:error', { rel, error: safeErrorMessage(e), src, dst })
+                }
+            }
+        } catch {
+            // ignore
+        }
+
         if (!fs.existsSync(confPy) && fs.existsSync(confExamplePy)) {
             fs.copyFileSync(confExamplePy, confPy)
+        }
+
+        // social-auto-upload 的部分 uploader 需要本机浏览器路径（LOCAL_CHROME_PATH），否则 /postVideo 会直接 500
+        // 这里自动探测并写入 conf.py，尽量避免用户手工配置。
+        try {
+            const candidates: string[] = []
+            const envCandidate = (process.env.SAU_CHROME_PATH || process.env.CHROME_PATH || '').trim()
+            if (envCandidate) candidates.push(envCandidate)
+
+            if (process.platform === 'win32') {
+                candidates.push(
+                    'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
+                    'C:\\\\Program Files (x86)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
+                    'C:\\\\Program Files\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe',
+                    'C:\\\\Program Files (x86)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe'
+                )
+            } else if (process.platform === 'darwin') {
+                candidates.push(
+                    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
+                )
+            } else {
+                candidates.push('google-chrome', 'chromium', 'chromium-browser')
+            }
+
+            const detectedAbs = candidates.find(p => (p.includes('\\\\') || p.startsWith('/')) && fs.existsSync(p))
+            const detected = detectedAbs || candidates[0]
+
+            if (detected && fs.existsSync(confPy)) {
+                const raw = fs.readFileSync(confPy, 'utf-8')
+                const hasAnyValue = /LOCAL_CHROME_PATH\s*=\s*['"][^'"]+['"]/.test(raw)
+                const isEmpty = /LOCAL_CHROME_PATH\s*=\s*['"]{2}/.test(raw)
+                if (!hasAnyValue || isEmpty) {
+                    const escaped = detected.replace(/\\/g, '\\\\')
+                    const next = raw.replace(/LOCAL_CHROME_PATH\s*=\s*['"][^'"]*['"]/, `LOCAL_CHROME_PATH = "${escaped}"`)
+                    if (next !== raw) fs.writeFileSync(confPy, next, 'utf-8')
+                    logPublish('social-auto-upload:conf:auto-set-browser', { detected })
+                }
+
+                // 为了让用户能扫码/处理登录风控，默认强制 headed（LOCAL_CHROME_HEADLESS=False）
+                // 如需强制 headless，可设置环境变量 SAU_FORCE_HEADLESS=1
+                const forceHeadless = (process.env.SAU_FORCE_HEADLESS || '').trim() === '1'
+                const desired = forceHeadless ? 'True' : 'False'
+                const cur = fs.readFileSync(confPy, 'utf-8')
+                if (/LOCAL_CHROME_HEADLESS\s*=\s*(True|False)/.test(cur)) {
+                    const next2 = cur.replace(/LOCAL_CHROME_HEADLESS\s*=\s*(True|False)/, `LOCAL_CHROME_HEADLESS = ${desired}`)
+                    if (next2 !== cur) {
+                        fs.writeFileSync(confPy, next2, 'utf-8')
+                        logPublish('social-auto-upload:conf:set-headless', { value: desired })
+                    }
+                }
+            }
+        } catch {
+            // ignore
         }
 
         if (!fs.existsSync(dbFile)) {
@@ -1337,13 +1635,56 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             fs.writeFileSync(depsMarker, new Date().toISOString())
         }
 
+        // Ensure Playwright browsers are installed. Without this, /postVideo often fails with:
+        // BrowserType.launch: Executable doesn't exist at ...\\ms-playwright\\chromium-XXXX\\chrome.exe
+        const playwrightBrowsersDir = path.join(installDir, 'ms-playwright')
+        const playwrightMarker = path.join(venvDir, '.playwright_browsers_installed')
+        if (!fs.existsSync(playwrightMarker)) {
+            try {
+                fs.mkdirSync(playwrightBrowsersDir, { recursive: true })
+                logPublish('social-auto-upload:playwright:install:start', { browsersDir: playwrightBrowsersDir })
+                await run(
+                    venvPython,
+                    ['-m', 'playwright', 'install', 'chromium'],
+                    installDir,
+                    {
+                        ...process.env,
+                        PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsersDir,
+                    }
+                )
+                fs.writeFileSync(playwrightMarker, new Date().toISOString())
+                logPublish('social-auto-upload:playwright:install:ok', { browsersDir: playwrightBrowsersDir })
+            } catch (e: any) {
+                logPublish('social-auto-upload:playwright:install:error', { error: safeErrorMessage(e) })
+                // don't throw here; allow service to start so logs/UI can show actionable errors
+            }
+        }
+
+        // social-auto-upload 要求提前创建 cookiesFile / videoFile 目录，否则 /uploadSave 会 500（No such file or directory）
+        try {
+            fs.mkdirSync(path.join(installDir, 'cookiesFile'), { recursive: true })
+            fs.mkdirSync(path.join(installDir, 'videoFile'), { recursive: true })
+        } catch {
+            // ignore
+        }
+
         if (!socialAutoUploadProc || socialAutoUploadProc.killed) {
+            let logFd: number | null = null
+            try {
+                const logFile = path.join(app.getPath('userData'), 'logs', 'social-auto-upload.log')
+                fs.mkdirSync(path.dirname(logFile), { recursive: true })
+                logFd = fs.openSync(logFile, 'a')
+            } catch {
+                logFd = null
+            }
+
             socialAutoUploadProc = spawn(venvPython, [backendPy], {
                 cwd: installDir,
-                stdio: 'ignore',
+                stdio: logFd != null ? ['ignore', logFd, logFd] : 'ignore',
                 windowsHide: true,
                 env: {
                     ...process.env,
+                    PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsersDir,
                     PYTHONUTF8: '1',
                     PYTHONIOENCODING: 'utf-8',
                 },
@@ -1456,7 +1797,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
         form.append('file', fs.createReadStream(filePath))
         if (filenameBase) form.append('filename', filenameBase)
 
-        await new Promise<void>((resolve, reject) => {
+        const { storageName } = await new Promise<{ storageName: string }>((resolve, reject) => {
             const req = http.request('http://127.0.0.1:5409/uploadSave', {
                 method: 'POST',
                 headers: form.getHeaders(),
@@ -1464,14 +1805,162 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                 let data = ''
                 res.on('data', (c) => data += c.toString())
                 res.on('end', () => {
-                    if ((res.statusCode || 0) >= 200 && (res.statusCode || 0) < 300) resolve()
-                    else reject(new Error(`上传到分发中心失败 (HTTP ${res.statusCode}) ${data.slice(0, 200)}`))
+                    const status = res.statusCode || 0
+                    if (status < 200 || status >= 300) {
+                        reject(new Error(`上传到分发中心失败 (HTTP ${res.statusCode}) ${data.slice(0, 200)}`))
+                        return
+                    }
+                    try {
+                        const parsed = JSON.parse(data)
+                        const filepath = parsed?.data?.filepath || parsed?.data?.filePath || parsed?.data?.id
+                        if (!filepath || typeof filepath !== 'string') {
+                            reject(new Error(`上传到分发中心失败：未返回文件存储名 ${data.slice(0, 200)}`))
+                            return
+                        }
+                        resolve({ storageName: filepath })
+                    } catch {
+                        reject(new Error(`上传到分发中心失败：响应非 JSON ${data.slice(0, 200)}`))
+                    }
                 })
             })
             req.on('error', reject)
             form.pipe(req)
         })
+        return { storageName }
     }
+
+    const postVideoToSocialAutoUpload = async (payload: Record<string, any>) => {
+        await new Promise<void>((resolve, reject) => {
+            const body = JSON.stringify(payload)
+            const req = http.request('http://127.0.0.1:5409/postVideo', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(body),
+                },
+            }, (res) => {
+                let data = ''
+                res.on('data', (c) => data += c.toString())
+                res.on('end', () => {
+                    const status = res.statusCode || 0
+
+                    const userData = app.getPath('userData')
+                    const logFile = path.join(userData, 'logs', 'social-auto-upload.log')
+                    const mediaDir = path.join(userData, 'social-auto-upload', 'media')
+
+                    const rejectCancelled = (msg?: string) => {
+                        const err: any = new Error(msg || '用户取消发布')
+                        err.name = 'PublishCancelledError'
+                        err.code = 499
+                        err.httpStatus = status
+                        reject(err)
+                    }
+
+                    const tailLog = () => {
+                        try {
+                            if (!fs.existsSync(logFile)) return ''
+                            const buf = fs.readFileSync(logFile)
+                            const slice = buf.length > 65536 ? buf.subarray(buf.length - 65536) : buf
+                            const text = stripAnsi(slice.toString('utf-8'))
+                            const lines = text.split(/\r?\n/g).filter(Boolean)
+                            return lines.slice(-120).join('\n')
+                        } catch {
+                            return ''
+                        }
+                    }
+
+                    const listMedia = () => {
+                        try {
+                            if (!fs.existsSync(mediaDir)) return [] as string[]
+                            const items = fs.readdirSync(mediaDir)
+                                .map((name) => {
+                                    const p = path.join(mediaDir, name)
+                                    try {
+                                        const st = fs.statSync(p)
+                                        return { name, mtime: st.mtimeMs }
+                                    } catch {
+                                        return { name, mtime: 0 }
+                                    }
+                                })
+                                .sort((a, b) => b.mtime - a.mtime)
+                                .slice(0, 10)
+                                .map(x => x.name)
+                            return items
+                        } catch {
+                            return [] as string[]
+                        }
+                    }
+
+                    const buildHint = () => {
+                        const tail = tailLog()
+                        const media = listMedia()
+                        return [
+                            `请查看日志：${logFile}`,
+                            media.length ? `诊断文件（最新 10 个）：${media.join(', ')}` : '',
+                            tail ? `---- social-auto-upload.log (tail) ----\n${tail}` : '',
+                        ].filter(Boolean).join('\n')
+                    }
+
+                    if (status === 499) {
+                        try {
+                            const parsed = JSON.parse(data)
+                            rejectCancelled(parsed?.msg || parsed?.message)
+                        } catch {
+                            rejectCancelled()
+                        }
+                        return
+                    }
+
+                    if (status < 200 || status >= 300) {
+                        const hint = buildHint()
+                        reject(new Error(`发布失败 (HTTP ${status}) ${data.slice(0, 400)}\n${hint ? `\n${hint}` : ''}`))
+                        return
+                    }
+                    try {
+                        const parsed = JSON.parse(data)
+                        if (parsed?.code && parsed.code !== 200) {
+                            if (parsed.code === 499) {
+                                rejectCancelled(parsed?.msg || '用户取消发布')
+                                return
+                            }
+                            const hint = buildHint()
+                            reject(new Error(`发布失败: ${parsed?.msg || data.slice(0, 200)}\n${hint ? `\n${hint}` : ''}`))
+                            return
+                        }
+                        resolve()
+                    } catch {
+                        resolve()
+                    }
+                })
+            })
+            req.on('error', reject)
+            req.write(body)
+            req.end()
+        })
+    }
+
+    const pickLatestPublishCookieEntry = (platform: PublishPlatformKey) => {
+        const entries = readPublishCookieStore().filter(e => e.platform === platform)
+        if (!entries.length) return null
+        entries.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        return entries[0]
+    }
+
+    const normalizeTags = (tags: unknown): string[] => {
+        const raw = Array.isArray(tags) ? tags : []
+        const cleaned = raw
+            .map(t => String(t ?? '').trim())
+            .filter(Boolean)
+            .map(t => t.startsWith('#') ? t.slice(1) : t)
+            .map(t => t.replace(/\s+/g, ' '))
+        const uniq: string[] = []
+        for (const t of cleaned) {
+            if (!uniq.includes(t)) uniq.push(t)
+        }
+        return uniq.slice(0, 10)
+    }
+
+    let publishOneClickBusy = false
 
     ipcMain.handle('social-auto-upload-open', async (_event, params?: { videoPath?: string, title?: string }) => {
         try {
@@ -1503,6 +1992,107 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
             return { success: true }
         } catch (error: any) {
             return { success: false, error: error.message }
+        }
+    })
+
+    ipcMain.handle('publish-one-click', async (_event, params: { platforms: PublishPlatformKey[]; videoPath: string; title?: string; tags?: string[] }) => {
+        const platforms = Array.isArray(params?.platforms) ? params.platforms : []
+        const videoPath = (params?.videoPath || '').trim()
+        const title = (params?.title || '').trim()
+
+        try {
+            if (publishOneClickBusy) {
+                throw new Error('正在发布中，请等待当前发布完成后再试（避免重复点击导致不稳定）')
+            }
+            publishOneClickBusy = true
+
+            logPublish('publish-one-click:start', { platforms, hasVideoPath: !!videoPath, titleLen: title.length })
+            if (!videoPath || !fs.existsSync(videoPath)) throw new Error('未找到要发布的视频文件，请先完成出片')
+            if (platforms.length === 0) throw new Error('请至少选择一个发布平台')
+
+            const meta = await ensureSocialAutoUploadRunning()
+            logPublish('publish-one-click:ensureSocialAutoUploadRunning:ok', { installDir: meta.installDir })
+
+            const tags = normalizeTags(params?.tags)
+            const finalTags = tags.length ? tags : ['AI', '数字人']
+
+            const safeTitle = (title || path.basename(videoPath, path.extname(videoPath))).trim().slice(0, 80)
+            const filenameBase = safeTitle.replace(/[\\\\/:*?"<>|]/g, '').slice(0, 50) || undefined
+
+            const coverPath = path.join(config.outputDir, 'covers', `publish_cover_${Date.now()}.jpg`)
+            try {
+                fs.mkdirSync(path.dirname(coverPath), { recursive: true })
+                await captureFrame(videoPath, coverPath, 1)
+            } catch {
+                // ignore cover failures (some platforms may not need it)
+            }
+
+            const { storageName } = await uploadToSocialAutoUpload(videoPath, filenameBase)
+            logPublish('publish-one-click:uploadSave:ok', { storageName })
+
+            const results: Array<{ platform: PublishPlatformKey; ok: boolean; error?: string }> = []
+            let cancelled = false
+            for (const platform of platforms) {
+                try {
+                    const entry = pickLatestPublishCookieEntry(platform)
+                    if (!entry) throw new Error(`未找到「${platform}」的 Cookie，请先在「设置 → 全网分发账号」里保存一次`)
+
+                    const cookieJson = decryptCookieJson(entry)
+                    const account = await upsertSocialAutoUploadAccount(meta, { platform, userName: entry.userName })
+                    writeSocialAutoUploadCookieFile(meta, account.filePath, cookieJson)
+
+                    const payload: Record<string, any> = {
+                        fileList: [storageName],
+                        accountList: [account.filePath],
+                        type: PUBLISH_PLATFORM_TYPE[platform],
+                        title: safeTitle,
+                        tags: finalTags,
+                        category: 0,
+                    }
+                    if (platform === 'douyin' && fs.existsSync(coverPath)) payload.thumbnail = coverPath
+
+                    await postVideoToSocialAutoUpload(payload)
+                    logPublish('publish-one-click:postVideo:ok', { platform })
+                    results.push({ platform, ok: true })
+                } catch (e: any) {
+                    const errName = String(e?.name || '')
+                    const errCode = Number((e as any)?.code || 0)
+                    const isCancelled = errCode === 499 || errName === 'PublishCancelledError'
+                    if (isCancelled) {
+                        cancelled = true
+                        logPublish('publish-one-click:postVideo:canceled', { platform })
+                        results.push({ platform, ok: false, error: '用户取消发布' })
+                        break
+                    }
+                    logPublish('publish-one-click:postVideo:error', { platform, error: safeErrorMessage(e) })
+                    results.push({ platform, ok: false, error: safeErrorMessage(e) })
+                }
+            }
+
+            if (cancelled) {
+                logPublish('publish-one-click:done:canceled', { results: results.map(r => ({ platform: r.platform, ok: r.ok })) })
+                return { success: false, canceled: true, error: '已取消发布', data: { results } }
+            }
+
+            const failed = results.filter(r => !r.ok)
+            if (failed.length) {
+                const logFile = path.join(app.getPath('userData'), 'logs', 'social-auto-upload.log')
+                logPublish('publish-one-click:done:partial-fail', { failed: failed.map(f => ({ platform: f.platform, error: f.error })), logFile })
+                return {
+                    success: false,
+                    error: `部分平台发布失败：${failed.map(f => `${f.platform}: ${f.error}`).join(' | ')}；请查看日志：${logFile}`,
+                    data: { results, logFile },
+                }
+            }
+
+            logPublish('publish-one-click:done:ok', { results: results.map(r => r.platform) })
+            return { success: true, data: { results } }
+        } catch (error: any) {
+            const logFile = path.join(app.getPath('userData'), 'logs', 'social-auto-upload.log')
+            logPublish('publish-one-click:error', { error: safeErrorMessage(error), logFile })
+            return { success: false, error: `${safeErrorMessage(error)}；请查看日志：${logFile}` }
+        } finally {
+            publishOneClickBusy = false
         }
     })
 
@@ -1802,8 +2392,13 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
         avatarVideoPath: string  // 服务器上的形象视频路径
         audioPath: string        // 本地音频文件路径
     }) => {
+        let tempAudioPath: string | null = null
         try {
             const { generateCloudVideoWithLocalPaths } = await import('../src/services/cloudGpuService')
+
+            // Duix/HeyGem：统一传 16k/mono/pcm_s16le WAV，避免服务端识别/封装问题
+            const tempDir = path.join(app.getPath('userData'), 'cloud_gpu_data', 'temp_audio')
+            tempAudioPath = convertAudioToDuixWavPcm16k(params.audioPath, tempDir)
 
             const videoPath = await generateCloudVideoWithLocalPaths(
                 {
@@ -1811,7 +2406,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                     localDataPath: path.join(app.getPath('userData'), 'cloud_gpu_data'),
                 },
                 params.avatarVideoPath,
-                params.audioPath,
+                tempAudioPath,
                 (progress: number, message: string) => {
                     mainWindow.webContents.send('cloud-gpu-progress', { progress, message })
                 }
@@ -1819,6 +2414,10 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
             return { success: true, data: { videoPath } }
         } catch (error: any) {
             return { success: false, error: error.message }
+        } finally {
+            if (tempAudioPath) {
+                try { fs.unlinkSync(tempAudioPath) } catch { /* ignore */ }
+            }
         }
     })
 }

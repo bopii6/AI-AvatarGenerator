@@ -283,6 +283,8 @@ async function downloadFile(
             return
         } catch (e: any) {
             const msg = e?.message || String(e)
+            // 404 往往表示文件尚未落盘/尚未对外可下载；不在这里做长时间重试，让上层继续轮询再试
+            if (String(msg).includes('HTTP 404')) throw e
             const isLast = attempt === maxRetries
             console.warn(`[CloudGPU] 下载失败，准备重试 (${attempt}/${maxRetries}):`, msg)
             if (isLast) throw e
@@ -461,7 +463,8 @@ function parseDuixQueryResult(taskCode: string, queryResult: any): {
             const lower = s.toLowerCase()
 
             if (['s', 'success', 'done', 'completed'].includes(lower)) {
-                const url = looksLikeFilePath(v) ? String(v) : `/${normalizedCode}-r.mp4`
+                // 有些实现成功时只返回一个数字（如时长），不会返回路径；这里用已知产物路径兜底
+                const url = looksLikeFilePath(v) ? String(v) : `/code/data/temp/${normalizedCode}-r.mp4`
                 return { taskStatus: s, resultUrl: url }
             }
 
@@ -762,7 +765,7 @@ export async function generateCloudVideo(
         const resultUrl = parsed.resultUrl
 
         if (resultUrl || taskStatus === 2 || taskProgress === 100) {
-            const videoUrl = resultUrl || `/${taskCode}-r.mp4`
+            const videoUrl = resultUrl || `/code/data/temp/${taskCode}-r.mp4`
 
             if (videoUrl) {
                 onProgress?.(90, '视频合成完成，正在下载...')
@@ -787,7 +790,13 @@ export async function generateCloudVideo(
                         await downloadFromDuixFileApi(cfg, videoUrl, outputPath, (percent) => {
                             onProgress?.(90 + percent * 0.1, `下载视频 ${percent}%`)
                         })
-                    } catch {
+                    } catch (e: any) {
+                        const msg = String(e?.message || e)
+                        // 常见：query 先标记 success，但 mp4 还在编码/落盘；此时继续轮询等待
+                        if (msg.includes('HTTP 404') || msg.includes('file not found')) {
+                            onProgress?.(90, '视频已生成，等待服务端写文件...')
+                            continue
+                        }
                         // 如果下载接口不存在，视频可能在共享目录中
                         try {
                             const directPath = videoUrl.startsWith('/') ? videoUrl : `/${videoUrl}`
