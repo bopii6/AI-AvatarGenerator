@@ -49,15 +49,10 @@ export default function CloudServiceStatus(props: { kind: ServiceKind; style?: C
 
     const tooltip = (() => {
         if (loading) return undefined
-        const endpoint = (status?.endpoint || '').trim()
-        const provider = (status?.provider || '').trim()
-        const parts = [
-            kind === 'voice' ? '语音服务' : '数字人服务',
-            provider ? `provider=${provider}` : null,
-            endpoint ? `endpoint=${endpoint}` : null,
-            status?.message ? `message=${status.message}` : null,
-        ].filter(Boolean)
-        return parts.join('\n')
+        const serviceName = kind === 'voice' ? '语音服务' : '数字人服务'
+        const lines = [serviceName]
+        if (status?.message) lines.push(status.message)
+        return lines.join('\n')
     })()
 
     const icon = loading

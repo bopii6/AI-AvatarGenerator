@@ -206,7 +206,7 @@ function DigitalHumanPanel() {
     const readyForVideo = transcriptConfirmed && hasAudio
 
     useEffect(() => {
-        const unsub = window.electronAPI?.on?.('cloud-gpu-download-progress', (_event: any, data: { progress: number; message: string }) => {
+        const unsub = window.electronAPI?.on?.('cloud-gpu-download-progress', (data: { progress: number; message: string }) => {
             if (typeof data?.progress === 'number' && !Number.isNaN(data.progress)) {
                 setDownloadProgress(Math.max(0, Math.min(100, data.progress)))
             }
