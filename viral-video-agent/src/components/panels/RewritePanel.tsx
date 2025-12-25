@@ -277,24 +277,25 @@ function RewritePanel() {
                                                             </Button>
                                                         </div>
 
-                                                        {/* 预设风格标签 */}
-                                                        <div>
-                                                            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)', marginBottom: 10 }}>您可以点击下方标签快速填充创作指令：</div>
-                                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-                                                                {PRESET_STYLES.map(style => (
-                                                                    <Tag
-                                                                        key={style.label}
-                                                                        style={{ cursor: 'pointer', padding: '6px 16px', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.08)', border: 'none', color: '#fff', fontSize: 14 }}
-                                                                        onClick={() => {
-                                                                            setRewriteMode(prev => ({ ...prev, [index]: 'custom' }));
-                                                                            setCustomInstructions(prev => ({ ...prev, [index]: style.value }));
-                                                                        }}
-                                                                    >
-                                                                        {style.label}
-                                                                    </Tag>
-                                                                ))}
+                                                        {/* 预设风格标签 - 仅在自定义模式下显示 */}
+                                                        {rewriteMode[index] === 'custom' && (
+                                                            <div>
+                                                                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)', marginBottom: 10 }}>您可以点击下方标签快速填充创作指令：</div>
+                                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                                                                    {PRESET_STYLES.map(style => (
+                                                                        <Tag
+                                                                            key={style.label}
+                                                                            style={{ cursor: 'pointer', padding: '6px 16px', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.08)', border: 'none', color: '#fff', fontSize: 14 }}
+                                                                            onClick={() => {
+                                                                                setCustomInstructions(prev => ({ ...prev, [index]: style.value }));
+                                                                            }}
+                                                                        >
+                                                                            {style.label}
+                                                                        </Tag>
+                                                                    ))}
+                                                                </div>
                                                             </div>
-                                                        </div>
+                                                        )}
 
                                                         {rewriteMode[index] === 'custom' && (
                                                             <TextArea

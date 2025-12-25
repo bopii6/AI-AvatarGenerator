@@ -436,6 +436,14 @@ function buildDownloadPathCandidates(serverPath: string): string[] {
         candidates.push(`/code/data/temp${noQuery}`)
     }
 
+    // 新格式：/code/data/temp/{taskCode}/result.avi
+    // 尝试提取 temp/ 后面的相对路径
+    const tempMatch = noQuery.match(/\/code\/data\/temp\/(.+)/)
+    if (tempMatch) {
+        candidates.push(`temp/${tempMatch[1]}`)
+        candidates.push(tempMatch[1])
+    }
+
     return uniqueStrings(candidates)
 }
 
@@ -501,18 +509,25 @@ async function downloadFromDuixFileApi(
     onProgress?: (percent: number) => void
 ): Promise<void> {
     const candidates = buildDownloadPathCandidates(serverPath)
+    console.log(`[downloadFromDuixFileApi] 原始路径: ${serverPath}`)
+    console.log(`[downloadFromDuixFileApi] 候选路径:`, candidates)
     let lastError: any
 
-    for (const p of candidates) {
+    for (let i = 0; i < candidates.length; i++) {
+        const p = candidates[i]
+        const downloadUrl = `${cfg.serverUrl}:${cfg.videoPort}/download?path=${encodeURIComponent(p)}`
+        console.log(`[downloadFromDuixFileApi] 尝试下载 ${i + 1}/${candidates.length}: ${downloadUrl}`)
         try {
             await downloadFile(
-                `${cfg.serverUrl}:${cfg.videoPort}/download?path=${encodeURIComponent(p)}`,
+                downloadUrl,
                 outputPath,
                 onProgress
             )
+            console.log(`[downloadFromDuixFileApi] ✅ 下载成功: ${p}`)
             return
         } catch (e: any) {
             lastError = e
+            console.log(`[downloadFromDuixFileApi] ❌ 失败: ${e?.message || e}`)
             continue
         }
     }
@@ -786,18 +801,34 @@ export async function generateCloudVideo(
                 } else {
                     // 服务器返回的是服务器上的本地路径
                     // 需要通过下载接口获取
-                    try {
-                        await downloadFromDuixFileApi(cfg, videoUrl, outputPath, (percent) => {
-                            onProgress?.(90 + percent * 0.1, `下载视频 ${percent}%`)
-                        })
-                    } catch (e: any) {
-                        const msg = String(e?.message || e)
-                        // 常见：query 先标记 success，但 mp4 还在编码/落盘；此时继续轮询等待
-                        if (msg.includes('HTTP 404') || msg.includes('file not found')) {
-                            onProgress?.(90, '视频已生成，等待服务端写文件...')
-                            continue
+                    // 直接在下载阶段内重试，避免回到轮询循环（每次轮询有5s延迟）
+                    const maxDownloadRetries = 12  // 最多等待 1 分钟（12 * 5s）
+                    let downloadSuccess = false
+                    let lastDownloadError: any
+
+                    for (let downloadAttempt = 0; downloadAttempt < maxDownloadRetries; downloadAttempt++) {
+                        try {
+                            await downloadFromDuixFileApi(cfg, videoUrl, outputPath, (percent) => {
+                                onProgress?.(90 + percent * 0.1, `下载视频 ${percent}%`)
+                            })
+                            downloadSuccess = true
+                            break
+                        } catch (e: any) {
+                            lastDownloadError = e
+                            const msg = String(e?.message || e)
+                            // 404 表示文件尚未落盘，等待后重试
+                            if (msg.includes('HTTP 404') || msg.includes('file not found') || msg.includes('Download failed')) {
+                                onProgress?.(90, `等待服务端写文件... (${downloadAttempt + 1}/${maxDownloadRetries})`)
+                                await new Promise(r => setTimeout(r, 5000))
+                                continue
+                            }
+                            // 其他错误，抛出
+                            throw e
                         }
-                        // 如果下载接口不存在，视频可能在共享目录中
+                    }
+
+                    if (!downloadSuccess) {
+                        // 尝试直接路径下载
                         try {
                             const directPath = videoUrl.startsWith('/') ? videoUrl : `/${videoUrl}`
                             await downloadFile(`${cfg.serverUrl}:${cfg.videoPort}${directPath}`, outputPath)
@@ -810,7 +841,7 @@ export async function generateCloudVideo(
                         if (fs.existsSync(videoUrl)) {
                             fs.copyFileSync(videoUrl, outputPath)
                         } else {
-                            throw new Error(`视频生成完成，但无法下载。服务器路径: ${videoUrl}`)
+                            throw lastDownloadError || new Error(`视频生成完成，但无法下载。服务器路径: ${videoUrl}`)
                         }
                     }
                 }
@@ -877,4 +908,212 @@ export async function generateCloudVideoWithLocalPaths(
     }
 
     return generateCloudVideo(cfg, tempModel, audioPath, onProgress)
+}
+
+/**
+ * 仅合成视频（不下载）
+ * 
+ * 返回服务端视频路径，用于后续手动下载。
+ * 这样可以区分"合成阶段"和"下载阶段"，便于定位瓶颈。
+ */
+export async function synthesizeCloudVideoOnly(
+    config: Partial<CloudGpuConfig>,
+    avatarVideoPath: string,
+    audioPath: string,
+    onProgress?: (progress: number, message: string) => void
+): Promise<{ taskCode: string; remoteVideoPath: string }> {
+    const cfg = { ...defaultConfig, ...config }
+
+    // 检查音频文件
+    if (!fs.existsSync(audioPath)) {
+        throw new Error(`音频文件不存在: ${audioPath}`)
+    }
+
+    const taskCode = await getUuidV4()
+
+    onProgress?.(5, '正在上传音频到服务器...')
+
+    // 尝试上传音频
+    let remoteAudioPath: string
+    try {
+        const audioExt = path.extname(audioPath) || '.wav'
+        const remoteAudioFileName = `audio_${taskCode}${audioExt}`
+        const uploadResult = await uploadFile(
+            `${cfg.serverUrl}:${cfg.videoPort}/upload`,
+            audioPath,
+            'audio',
+            (percent) => {
+                onProgress?.(5 + percent * 0.15, `上传音频 ${percent}%`)
+            },
+            remoteAudioFileName
+        )
+        remoteAudioPath = uploadResult?.path || uploadResult?.audio_path || `/code/data/${remoteAudioFileName}`
+    } catch (error: any) {
+        throw new Error(`音频上传失败：${error?.message || '未知错误'}`)
+    }
+
+    onProgress?.(25, '正在提交视频合成任务...')
+
+    // 提交合成任务
+    const submitResult = await postJSON(`${cfg.serverUrl}:${cfg.videoPort}/easy/submit`, {
+        audio_url: remoteAudioPath,
+        video_url: avatarVideoPath,
+        code: taskCode,
+        chaofen: 0,
+        watermark_switch: 0,
+        pn: 1,
+    })
+
+    if (submitResult.code !== undefined && submitResult.code !== 0 && submitResult.code !== 200 && submitResult.code !== 10000) {
+        throw new Error(submitResult.msg || submitResult.message || '提交任务失败')
+    }
+
+    onProgress?.(30, '任务已提交，正在合成视频...')
+
+    // 轮询查询进度
+    const maxAttempts = 180
+    const pollInterval = 5000
+
+    for (let i = 0; i < maxAttempts; i++) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval))
+
+        let queryResult: any
+        try {
+            queryResult = await getJSON(
+                `${cfg.serverUrl}:${cfg.videoPort}/easy/query?code=${taskCode}`,
+                DEFAULT_QUERY_TIMEOUT_MS
+            )
+        } catch (error: any) {
+            console.warn('查询进度失败，继续等待...', error.message)
+            continue
+        }
+
+        // 添加日志以便调试
+        console.log(`[synthesizeCloudVideoOnly] 轮询 ${i + 1}/${maxAttempts}, 原始返回:`, JSON.stringify(queryResult))
+
+        const parsed = parseDuixQueryResult(taskCode, queryResult)
+        const taskProgress = parsed.taskProgress
+        const taskStatus = parsed.taskStatus
+        const resultUrl = parsed.resultUrl
+
+        console.log(`[synthesizeCloudVideoOnly] 解析结果: progress=${taskProgress}, status=${taskStatus}, resultUrl=${resultUrl}`)
+
+        // 合成完成
+        if (resultUrl || taskStatus === 2 || taskProgress === 100) {
+            const videoUrl = resultUrl || `/code/data/temp/${taskCode}-r.mp4`
+            console.log(`[synthesizeCloudVideoOnly] ✅ 合成完成! videoUrl=${videoUrl}`)
+            onProgress?.(100, '✅ 合成完成！点击下方按钮下载视频')
+            return { taskCode, remoteVideoPath: videoUrl }
+        }
+
+        // 失败
+        if (
+            queryResult.code === -1 ||
+            queryResult.status === 'failed' ||
+            taskStatus === 3 ||
+            (typeof taskStatus === 'string' && ['f', 'fail', 'failed', 'error'].includes(taskStatus.toLowerCase()))
+        ) {
+            throw new Error(parsed.errorMessage || queryResult.msg || queryResult.message || '视频合成失败')
+        }
+
+        // 更新进度
+        const estimatedProgress = Math.min(30 + (i / maxAttempts) * 65, 95)
+        const progressPercent = typeof taskProgress === 'number' ? taskProgress : estimatedProgress
+        onProgress?.(Math.round(progressPercent), `合成中 ${Math.round(progressPercent)}%...`)
+    }
+
+    throw new Error('视频合成超时（超过 15 分钟），请检查服务器状态')
+}
+
+/**
+ * 从服务器下载合成好的视频到本地
+ * 
+ * 配合 synthesizeCloudVideoOnly 使用，分离合成和下载阶段。
+ */
+export async function downloadCloudVideoToLocal(
+    config: Partial<CloudGpuConfig>,
+    remoteVideoPath: string,
+    localAudioPathForMux?: string,
+    onProgress?: (progress: number, message: string) => void
+): Promise<string> {
+    const cfg = { ...defaultConfig, ...config }
+
+    console.log(`[downloadCloudVideoToLocal] 开始下载, 远程路径: ${remoteVideoPath}`)
+    onProgress?.(0, '准备下载...')
+
+    const outputDir = path.join(cfg.localDataPath, 'generated_videos')
+    if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true })
+    }
+
+    const outputPath = path.join(outputDir, `digital_human_${Date.now()}.mp4`)
+    console.log(`[downloadCloudVideoToLocal] 本地输出路径: ${outputPath}`)
+
+    // 直接在下载阶段内重试
+    const maxDownloadRetries = 12
+    let downloadSuccess = false
+    let lastDownloadError: any
+    let lastLoggedPercent = -1  // 用于节流日志输出
+
+    for (let downloadAttempt = 0; downloadAttempt < maxDownloadRetries; downloadAttempt++) {
+        console.log(`[downloadCloudVideoToLocal] 下载尝试 ${downloadAttempt + 1}/${maxDownloadRetries}`)
+        onProgress?.(0, `正在下载... (尝试 ${downloadAttempt + 1}/${maxDownloadRetries})`)
+        try {
+            await downloadFromDuixFileApi(cfg, remoteVideoPath, outputPath, (percent) => {
+                // 只在进度变化时输出日志
+                if (percent !== lastLoggedPercent) {
+                    console.log(`[downloadCloudVideoToLocal] 下载进度: ${percent}%`)
+                    lastLoggedPercent = percent
+                }
+                onProgress?.(percent, `下载视频 ${percent}%`)
+            })
+            downloadSuccess = true
+            console.log(`[downloadCloudVideoToLocal] ✅ 下载成功!`)
+            break
+        } catch (e: any) {
+            lastDownloadError = e
+            const msg = String(e?.message || e)
+            console.log(`[downloadCloudVideoToLocal] ❌ 下载失败: ${msg}`)
+            if (msg.includes('HTTP 404') || msg.includes('file not found') || msg.includes('Download failed')) {
+                onProgress?.(0, `等待服务端写文件... (${downloadAttempt + 1}/${maxDownloadRetries})`)
+                await new Promise(r => setTimeout(r, 5000))
+                continue
+            }
+            throw e
+        }
+    }
+
+    if (!downloadSuccess) {
+        // 尝试直接路径下载
+        try {
+            const directPath = remoteVideoPath.startsWith('/') ? remoteVideoPath : `/${remoteVideoPath}`
+            await downloadFile(`${cfg.serverUrl}:${cfg.videoPort}${directPath}`, outputPath)
+        } catch {
+            if (fs.existsSync(remoteVideoPath)) {
+                fs.copyFileSync(remoteVideoPath, outputPath)
+            } else {
+                throw lastDownloadError || new Error(`无法下载视频。服务器路径: ${remoteVideoPath}`)
+            }
+        }
+    }
+
+    // 如果提供了音频路径，合并音频
+    if (localAudioPathForMux && fs.existsSync(localAudioPathForMux)) {
+        try {
+            onProgress?.(95, '正在合并音频...')
+            const muxedPath = outputPath.replace(/\.mp4$/i, '_with_audio.mp4')
+            await replaceAudioTrack(outputPath, localAudioPathForMux, muxedPath)
+            try {
+                fs.unlinkSync(outputPath)
+            } catch {
+                // ignore
+            }
+            fs.renameSync(muxedPath, outputPath)
+        } catch (e: any) {
+            console.warn('合并音频失败，返回原视频:', e?.message || e)
+        }
+    }
+
+    onProgress?.(100, '✅ 下载完成！')
+    return outputPath
 }

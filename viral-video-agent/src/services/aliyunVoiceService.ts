@@ -26,7 +26,9 @@ const DEFAULT_TIMEOUT_MS = 60_000
 
 export interface AliyunVoiceConfig {
     apiKey: string
-    model?: string // cosyvoice-v3-flash | cosyvoice-v3-plus
+    model?: string // cosyvoice-v3-flash | cosyvoice-v3-plus | cosyvoice-clone-v1
+    /** 回退模型列表，当主模型额度耗尽时按顺序尝试 */
+    fallbackModels?: string[]
     /** 设备 ID，用于音色前缀 */
     deviceId?: string
     /** 本地数据存储路径 */
@@ -362,6 +364,7 @@ export async function deleteVoice(
  * 使用复刻音色合成语音（WebSocket API）
  * 
  * DashScope CosyVoice 语音合成使用 WebSocket 实时流式接口
+ * 支持模型回退：当主模型额度耗尽时自动切换到备用模型
  */
 export async function synthesizeSpeech(
     config: AliyunVoiceConfig,
@@ -376,7 +379,9 @@ export async function synthesizeSpeech(
     const voiceId = safeTrim(params.voiceId)
     if (!voiceId) throw new Error('voice_id 为空')
 
-    const model = config.model || DEFAULT_MODEL
+    const primaryModel = config.model || DEFAULT_MODEL
+    const fallbackModels = config.fallbackModels || []
+    const allModels = [primaryModel, ...fallbackModels]
 
     // 确保输出目录存在
     const outputDir = path.dirname(params.outputPath)
@@ -386,7 +391,15 @@ export async function synthesizeSpeech(
 
     const debugWs = (process.env.DASHSCOPE_DEBUG_WS || '').trim() === '1'
 
-    const runOnce = async (options: { format: 'mp3' | 'wav' | 'pcm' | 'opus'; sampleRate: number }) => {
+    // 检测是否为额度耗尽错误
+    const isQuotaExhaustedError = (errMsg: string): boolean => {
+        return errMsg.includes('AllocationQuota') ||
+            errMsg.includes('FreeTierOnly') ||
+            errMsg.includes('quota') ||
+            errMsg.includes('403')
+    }
+
+    const runOnceWithModel = async (model: string, options: { format: 'mp3' | 'wav' | 'pcm' | 'opus'; sampleRate: number }) => {
         return new Promise<string>((resolve, reject) => {
             const taskId = randomUUID()
             const audioChunks: Buffer[] = []
@@ -487,7 +500,7 @@ export async function synthesizeSpeech(
                     if (debugWs) console.log('[AliyunVoice] WS event:', event, 'raw:', str.slice(0, 500))
 
                     if (event === 'task-started') {
-                        console.log('[AliyunVoice] 语音合成任务开始')
+                        console.log(`[AliyunVoice] 语音合成任务开始 (模型: ${model})`)
                         return
                     }
 
@@ -543,6 +556,7 @@ export async function synthesizeSpeech(
                 if (audioChunks.length > 0) {
                     const audioBuffer = Buffer.concat(audioChunks)
                     fs.writeFileSync(params.outputPath, audioBuffer)
+                    console.log(`[AliyunVoice] 语音合成完成 (模型: ${model})`)
                     resolve(params.outputPath)
                 } else {
                     reject(new Error('未收到音频数据'))
@@ -556,17 +570,45 @@ export async function synthesizeSpeech(
         })
     }
 
-    // 输出格式跟随 outputPath 后缀，避免“内容是 wav 但文件名是 mp3”这种坑
+    // 带模型回退的合成函数
+    const synthesizeWithFallback = async (options: { format: 'mp3' | 'wav' | 'pcm' | 'opus'; sampleRate: number }): Promise<string> => {
+        let lastError: Error | null = null
+
+        for (let i = 0; i < allModels.length; i++) {
+            const model = allModels[i]
+            try {
+                console.log(`[AliyunVoice] 尝试使用模型: ${model}${i > 0 ? ' (回退)' : ''}`)
+                return await runOnceWithModel(model, options)
+            } catch (err: any) {
+                lastError = err
+                const errMsg = String(err?.message || err)
+
+                // 如果是额度耗尽错误，且还有备用模型，则继续尝试
+                if (isQuotaExhaustedError(errMsg) && i < allModels.length - 1) {
+                    console.warn(`[AliyunVoice] 模型 ${model} 额度耗尽，尝试回退到下一个模型...`)
+                    continue
+                }
+
+                // 其他错误或没有更多备用模型，直接抛出
+                throw err
+            }
+        }
+
+        // 如果所有模型都失败了
+        throw lastError || new Error('所有模型均合成失败')
+    }
+
+    // 输出格式跟随 outputPath 后缀，避免"内容是 wav 但文件名是 mp3"这种坑
     const outExt = path.extname(params.outputPath).toLowerCase()
 
     // wav：优先 16k（更稳），失败再尝试 22.05k（部分环境/文本更快）
     if (outExt === '.wav' || !outExt) {
         try {
-            return await runOnce({ format: 'wav', sampleRate: 16000 })
+            return await synthesizeWithFallback({ format: 'wav', sampleRate: 16000 })
         } catch (e1: any) {
             const msg = String(e1?.message || e1)
             if (msg.includes('timeout') || msg.includes('InvalidParameter') || msg.includes('task-failed')) {
-                return await runOnce({ format: 'wav', sampleRate: 22050 })
+                return await synthesizeWithFallback({ format: 'wav', sampleRate: 22050 })
             }
             throw e1
         }
@@ -574,11 +616,11 @@ export async function synthesizeSpeech(
 
     // mp3：直接用 mp3/22050（更小更快），失败再退回 wav/16000（仍然写入到 mp3 路径，由上层决定是否转码）
     try {
-        return await runOnce({ format: 'mp3', sampleRate: 22050 })
+        return await synthesizeWithFallback({ format: 'mp3', sampleRate: 22050 })
     } catch (e1: any) {
         const msg = String(e1?.message || e1)
         if (msg.includes('timeout') || msg.includes('InvalidParameter') || msg.includes('task-failed')) {
-            return await runOnce({ format: 'wav', sampleRate: 16000 })
+            return await synthesizeWithFallback({ format: 'wav', sampleRate: 16000 })
         }
         throw e1
     }

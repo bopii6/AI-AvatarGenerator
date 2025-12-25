@@ -1,5 +1,5 @@
-import { Form, Input, Button, Card, Space, Divider, Typography, message } from 'antd'
-import { DatabaseOutlined, SaveOutlined } from '@ant-design/icons'
+import { Form, Input, Button, Card, Space, Divider, Typography, message, Select } from 'antd'
+import { DatabaseOutlined, SaveOutlined, SoundOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 
 const { Title, Text } = Typography
@@ -57,6 +57,8 @@ export default function ServerSettings() {
                     CLOUD_GPU_VIDEO_PORT: '8383',
                     TENCENT_COS_VOICE_PREFIX: 'voice-samples/',
                     TENCENT_COS_SIGNED_URL_EXPIRES_SECONDS: '3600',
+                    ALIYUN_COSYVOICE_MODEL: 'cosyvoice-v3-flash',
+                    ALIYUN_COSYVOICE_FALLBACK_MODELS: 'cosyvoice-clone-v1,cosyvoice-v3-plus',
                 }}
             >
                 <Card
@@ -155,6 +157,43 @@ export default function ServerSettings() {
                             style={{ width: 100 }}
                         >
                             <Input placeholder="8383" />
+                        </Form.Item>
+                    </Space>
+                </Card>
+
+                <Card
+                    size="small"
+                    title={<Space><SoundOutlined /> 语音合成模型配置</Space>}
+                    style={{ marginBottom: 16, borderRadius: 8, border: '1px solid var(--border)' }}
+                >
+                    <Text type="secondary">
+                        配置阿里云 DashScope CosyVoice 语音合成模型。当主模型额度耗尽时，自动切换到回退模型。
+                    </Text>
+                    <div style={{ height: 12 }} />
+                    <Space style={{ width: '100%' }} align="start" wrap>
+                        <Form.Item
+                            label="主模型"
+                            name="ALIYUN_COSYVOICE_MODEL"
+                            style={{ minWidth: 280 }}
+                            extra="性价比优先选 flash"
+                        >
+                            <Select
+                                placeholder="选择主模型"
+                                options={[
+                                    { value: 'cosyvoice-v3-flash', label: 'cosyvoice-v3-flash (性价比)' },
+                                    { value: 'cosyvoice-v3-plus', label: 'cosyvoice-v3-plus (高质量)' },
+                                    { value: 'cosyvoice-clone-v1', label: 'cosyvoice-clone-v1 (克隆专用)' },
+                                ]}
+                                allowClear={false}
+                            />
+                        </Form.Item>
+                        <Form.Item
+                            label="回退模型"
+                            name="ALIYUN_COSYVOICE_FALLBACK_MODELS"
+                            style={{ flex: 1, minWidth: 320 }}
+                            extra="逗号分隔，按优先级排序，可添加新模型名称"
+                        >
+                            <Input placeholder="cosyvoice-clone-v1,cosyvoice-v3-plus" />
                         </Form.Item>
                     </Space>
                 </Card>

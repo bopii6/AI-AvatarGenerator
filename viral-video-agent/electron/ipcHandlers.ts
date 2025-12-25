@@ -475,11 +475,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     }
 
+    // ========== 更新检查 IPC ==========
+    ipcMain.handle('check-for-updates', async () => {
+        try {
+            const { manualCheckForUpdates } = await import('../src/services/updateService')
+            const result = await manualCheckForUpdates()
+            return { success: true, data: result }
+        } catch (error: any) {
+            console.error('[check-for-updates] failed', error)
+            return { success: false, error: error.message }
+        }
+    })
+
     // ========== 系统配置 IPC ==========
     const getAliyunVoiceRuntime = () => {
         const runtime = readServerConfig()
         const apiKey = (runtime.ALIYUN_DASHSCOPE_API_KEY || process.env.ALIYUN_DASHSCOPE_API_KEY || '').trim()
         const model = (runtime.ALIYUN_COSYVOICE_MODEL || process.env.ALIYUN_COSYVOICE_MODEL || 'cosyvoice-v3-flash').trim()
+        // 回退模型列表（逗号分隔）
+        const fallbackModelsRaw = (runtime.ALIYUN_COSYVOICE_FALLBACK_MODELS || process.env.ALIYUN_COSYVOICE_FALLBACK_MODELS || '').trim()
+        const fallbackModels = fallbackModelsRaw ? fallbackModelsRaw.split(',').map(m => m.trim()).filter(Boolean) : []
         const uploadServerUrl = (runtime.VOICE_AUDIO_UPLOAD_SERVER_URL || process.env.VOICE_AUDIO_UPLOAD_SERVER_URL || '').trim()
         const uploadPortRaw = (runtime.VOICE_AUDIO_UPLOAD_PORT || process.env.VOICE_AUDIO_UPLOAD_PORT || '').trim()
         const uploadPortParsed = parseInt(uploadPortRaw, 10)
@@ -494,6 +509,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         return {
             apiKey,
             model,
+            fallbackModels,
             uploadServerUrl,
             uploadServerPort,
             cosBucket,
@@ -724,7 +740,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             if (!voiceId) throw new Error('voiceId 为空')
 
             const { synthesizeSpeech, getVoice } = await import('../src/services/aliyunVoiceService')
-            const { apiKey, model } = getAliyunVoiceRuntime()
+            const { apiKey, model, fallbackModels } = getAliyunVoiceRuntime()
 
             try {
                 const voice = await getVoice({ apiKey, model }, voiceId)
@@ -742,17 +758,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             const outputPath = path.join(outputDir, `aliyun_voice_${Date.now()}.wav`)
 
             const chunks = splitTextForTts(text, 220)
-            console.log('[cloud-voice-tts] text chars:', text.length, 'chunks:', chunks.length)
+            console.log('[cloud-voice-tts] text chars:', text.length, 'chunks:', chunks.length, 'fallbackModels:', fallbackModels)
 
             if (chunks.length <= 1) {
-                const audioPath = await synthesizeSpeech({ apiKey, model }, { voiceId, text, outputPath })
+                const audioPath = await synthesizeSpeech({ apiKey, model, fallbackModels }, { voiceId, text, outputPath })
                 return { success: true, data: { audioPath } }
             }
 
             const partPaths: string[] = []
             for (let i = 0; i < chunks.length; i++) {
                 const partOut = path.join(outputDir, `aliyun_voice_part_${Date.now()}_${i}.wav`)
-                const partPath = await synthesizeSpeech({ apiKey, model }, { voiceId, text: chunks[i], outputPath: partOut })
+                const partPath = await synthesizeSpeech({ apiKey, model, fallbackModels }, { voiceId, text: chunks[i], outputPath: partOut })
                 partPaths.push(partPath)
             }
 
@@ -2417,6 +2433,85 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
         } finally {
             if (tempAudioPath) {
                 try { fs.unlinkSync(tempAudioPath) } catch { /* ignore */ }
+            }
+        }
+    })
+
+    // 仅合成视频（不下载）
+    ipcMain.handle('cloud-gpu-synthesize-only', async (_event, params: {
+        avatarVideoPath: string
+        audioPath: string
+    }) => {
+        console.log('[IPC] cloud-gpu-synthesize-only 开始', params)
+        let tempAudioPath: string | null = null
+        try {
+            const { synthesizeCloudVideoOnly } = await import('../src/services/cloudGpuService')
+
+            // 统一转换音频格式
+            const tempDir = path.join(app.getPath('userData'), 'cloud_gpu_data', 'temp_audio')
+            tempAudioPath = convertAudioToDuixWavPcm16k(params.audioPath, tempDir)
+
+            const result = await synthesizeCloudVideoOnly(
+                {
+                    ...getCloudGpuRuntime(),
+                    localDataPath: path.join(app.getPath('userData'), 'cloud_gpu_data'),
+                },
+                params.avatarVideoPath,
+                tempAudioPath,
+                (progress: number, message: string) => {
+                    mainWindow.webContents.send('cloud-gpu-progress', { progress, message })
+                }
+            )
+
+            console.log('[IPC] cloud-gpu-synthesize-only 合成完成:', result)
+
+            // 保存临时音频路径用于后续下载时合并
+            return {
+                success: true,
+                data: {
+                    taskCode: result.taskCode,
+                    remoteVideoPath: result.remoteVideoPath,
+                    tempAudioPath: tempAudioPath,  // 保留，下载时需要用于合并音频
+                }
+            }
+        } catch (error: any) {
+            console.error('[IPC] cloud-gpu-synthesize-only 失败:', error.message)
+            // 合成失败时清理临时音频
+            if (tempAudioPath) {
+                try { fs.unlinkSync(tempAudioPath) } catch { /* ignore */ }
+            }
+            return { success: false, error: error.message }
+        }
+        // 注意：tempAudioPath 不在这里清理，因为下载时还需要用
+    })
+
+    // 下载已合成的视频
+    ipcMain.handle('cloud-gpu-download-video', async (_event, params: {
+        remoteVideoPath: string
+        tempAudioPath?: string  // 用于合并音频
+    }) => {
+        try {
+            const { downloadCloudVideoToLocal } = await import('../src/services/cloudGpuService')
+
+            const videoPath = await downloadCloudVideoToLocal(
+                {
+                    ...getCloudGpuRuntime(),
+                    localDataPath: path.join(app.getPath('userData'), 'cloud_gpu_data'),
+                },
+                params.remoteVideoPath,
+                params.tempAudioPath,
+                (progress: number, message: string) => {
+                    mainWindow.webContents.send('cloud-gpu-download-progress', { progress, message })
+                }
+            )
+
+            return { success: true, data: { videoPath } }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        } finally {
+            // 下载完成后清理临时音频
+            if (params.tempAudioPath) {
+                try { fs.unlinkSync(params.tempAudioPath) } catch { /* ignore */ }
             }
         }
     })

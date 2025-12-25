@@ -7,6 +7,7 @@ const { Title, Text } = Typography
 const MODEL_OPTIONS = [
     { value: 'cosyvoice-v3-flash', label: 'cosyvoice-v3-flash（更快更省）' },
     { value: 'cosyvoice-v3-plus', label: 'cosyvoice-v3-plus（音质更好）' },
+    { value: 'cosyvoice-clone-v1', label: 'cosyvoice-clone-v1（克隆专用）' },
 ]
 
 export default function ApiKeySettings() {
@@ -49,6 +50,7 @@ export default function ApiKeySettings() {
     const onFinish = async (values: any) => {
         const apiKey = String(values?.ALIYUN_DASHSCOPE_API_KEY || '').trim()
         const model = String(values?.ALIYUN_COSYVOICE_MODEL || 'cosyvoice-v3-flash').trim()
+        const fallbackModels = String(values?.ALIYUN_COSYVOICE_FALLBACK_MODELS || '').trim()
 
         if (!apiKey) {
             message.warning('请输入 DashScope API Key')
@@ -60,6 +62,7 @@ export default function ApiKeySettings() {
             const save = await window.electronAPI?.invoke('config-update', {
                 ALIYUN_DASHSCOPE_API_KEY: apiKey,
                 ALIYUN_COSYVOICE_MODEL: model,
+                ALIYUN_COSYVOICE_FALLBACK_MODELS: fallbackModels,
             })
             if (!save?.success) throw new Error(save?.error || '保存失败')
 
@@ -87,7 +90,10 @@ export default function ApiKeySettings() {
                 form={form}
                 layout="vertical"
                 onFinish={onFinish}
-                initialValues={{ ALIYUN_COSYVOICE_MODEL: 'cosyvoice-v3-flash' }}
+                initialValues={{
+                    ALIYUN_COSYVOICE_MODEL: 'cosyvoice-v3-flash',
+                    ALIYUN_COSYVOICE_FALLBACK_MODELS: 'cosyvoice-clone-v1,cosyvoice-v3-plus',
+                }}
             >
                 <Card
                     size="small"
@@ -103,8 +109,16 @@ export default function ApiKeySettings() {
                         <Input.Password placeholder="sk-..." />
                     </Form.Item>
 
-                    <Form.Item label="CosyVoice 模型" name="ALIYUN_COSYVOICE_MODEL">
+                    <Form.Item label="主模型" name="ALIYUN_COSYVOICE_MODEL" extra="性价比优先选 flash">
                         <Select options={MODEL_OPTIONS} />
+                    </Form.Item>
+
+                    <Form.Item
+                        label="回退模型"
+                        name="ALIYUN_COSYVOICE_FALLBACK_MODELS"
+                        extra="逗号分隔，按优先级排序。主模型额度耗尽时自动切换"
+                    >
+                        <Input placeholder="cosyvoice-clone-v1,cosyvoice-v3-plus" />
                     </Form.Item>
 
                     <Space style={{ width: '100%' }} direction="vertical">

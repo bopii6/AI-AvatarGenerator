@@ -4,7 +4,6 @@ import {
     DownloadOutlined,
     UserOutlined,
     SettingOutlined,
-    BugOutlined,
     CopyOutlined,
     RocketOutlined,
     LockOutlined,
@@ -13,7 +12,6 @@ import {
 import { useAppStore } from './store/appStore'
 import CookieSettings from './components/CookieSettings'
 import VoiceCloneSettings from './components/VoiceCloneSettings'
-import ApiKeySettings from './components/ApiKeySettings'
 import ServerSettings from './components/ServerSettings'
 import ProfileVideoSelector from './components/ProfileVideoSelector'
 import CloudServiceStatus from './components/CloudServiceStatus'
@@ -33,13 +31,6 @@ function App() {
     const [isTracking, setIsTracking] = useState(false)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [adminEnabled, setAdminEnabled] = useState(false)
-    const [publishOnlyMode, setPublishOnlyMode] = useState(() => {
-        try {
-            return localStorage.getItem('vva_publish_only_mode') === '1'
-        } catch {
-            return false
-        }
-    })
     const [parseMode, setParseMode] = useState<'single' | 'profile' | null>(null)
     const [profileModalOpen, setProfileModalOpen] = useState(false)
     const [profileLoading, setProfileLoading] = useState(false)
@@ -95,20 +86,6 @@ function App() {
         }
         loadRuntimeFlags()
     }, [])
-
-    useEffect(() => {
-        try {
-            localStorage.setItem('vva_publish_only_mode', publishOnlyMode ? '1' : '0')
-        } catch {
-            // ignore
-        }
-    }, [publishOnlyMode])
-
-    useEffect(() => {
-        if (publishOnlyMode) {
-            setActiveKey('publish')
-        }
-    }, [publishOnlyMode, setActiveKey])
 
     // Tab 切换（语音走云端 API，数字人走独立 GPU 服务，无需服务切换/等待）
     const handleTabChange = useCallback((key: string) => {
@@ -262,7 +239,7 @@ function App() {
     const sidebarKey = activeKey === 'audio' ? 'digitalHuman' : activeKey
 
     const activeIndex = Math.max(0, progressItems.findIndex((i) => i.key === sidebarKey))
-    const maxUnlockedIndex = publishOnlyMode ? (progressItems.length - 1) : (() => {
+    const maxUnlockedIndex = (() => {
         let idx = 0
         for (let i = 1; i < progressItems.length; i += 1) {
             if (progressItems[i - 1].done) idx = i
@@ -487,17 +464,46 @@ function App() {
         <>
             {/* 顶部工具栏 - 简化版 */}
             <header className="header" style={{ justifyContent: 'center', position: 'relative' }}>
-                <div className="header-title" style={{ flex: 'none', justifyContent: 'center' }}>
+                <div className="header-title" style={{ flex: 'none', justifyContent: 'center', paddingRight: 280 }}>
                     <div className="brand-pill" style={{ fontSize: 16, padding: '8px 16px' }}>AI</div>
                     <div style={{ textAlign: 'center' }}>
                         <div className="brand-name" style={{ fontSize: 28, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
                             360行 AI智能体大脑
-                            <span
-                                title={`build: ${__BUILD_TIME__}`}
-                                style={{ fontSize: 10, backgroundColor: 'rgba(0, 212, 170, 0.1)', color: '#00d4aa', padding: '2px 8px', borderRadius: 4, border: '1px solid rgba(0, 212, 170, 0.3)', verticalAlign: 'middle', fontWeight: 400 }}
-                            >
-                                v{__APP_VERSION__}
-                            </span>
+                            <Tooltip title="点击检查更新">
+                                <span
+                                    title={`build: ${__BUILD_TIME__}`}
+                                    style={{ fontSize: 10, backgroundColor: 'rgba(0, 212, 170, 0.1)', color: '#00d4aa', padding: '2px 8px', borderRadius: 4, border: '1px solid rgba(0, 212, 170, 0.3)', verticalAlign: 'middle', fontWeight: 400, cursor: 'pointer' }}
+                                    onClick={async () => {
+                                        const hide = message.loading('正在检查更新...', 0)
+                                        try {
+                                            const res = await window.electronAPI?.invoke('check-for-updates')
+                                            hide()
+                                            if (res?.success && res.data) {
+                                                if (res.data.hasUpdate) {
+                                                    Modal.confirm({
+                                                        title: '发现新版本',
+                                                        content: res.data.message,
+                                                        okText: '立即下载',
+                                                        cancelText: '稍后',
+                                                        onOk: () => {
+                                                            window.open(res.data.downloadUrl, '_blank')
+                                                        },
+                                                    })
+                                                } else {
+                                                    message.success(res.data.message)
+                                                }
+                                            } else {
+                                                message.error(res?.data?.message || res?.error || '检查更新失败')
+                                            }
+                                        } catch (e: any) {
+                                            hide()
+                                            message.error('检查更新失败')
+                                        }
+                                    }}
+                                >
+                                    v{__APP_VERSION__}
+                                </span>
+                            </Tooltip>
                         </div>
                         <div className="brand-subtitle" style={{ fontSize: 14 }}>一键生成 · 全网分发 · 躺赚流量</div>
                     </div>
@@ -519,25 +525,6 @@ function App() {
                         <CloudServiceStatus kind="voice" />
                         <CloudServiceStatus kind="gpu" />
                     </Space>
-                    <Tooltip title={publishOnlyMode ? '已开启：仅测试发布（跳过前置步骤）' : '仅测试发布：跳过前置步骤，直达「一键发」'}>
-                        <Button
-                            size="large"
-                            type={publishOnlyMode ? 'primary' : 'default'}
-                            icon={<BugOutlined />}
-                            onClick={() => {
-                                const next = !publishOnlyMode
-                                setPublishOnlyMode(next)
-                                if (next) {
-                                    message.info('已开启仅测试发布模式：可直接进入「一键发」，并在发布页选择本地视频测试发布。')
-                                } else {
-                                    message.info('已关闭仅测试发布模式。')
-                                }
-                            }}
-                            style={{ marginRight: 12 }}
-                        >
-                            测试发布
-                        </Button>
-                    </Tooltip>
                     <Button
                         size="large"
                         icon={<SettingOutlined />}
@@ -554,7 +541,7 @@ function App() {
                 <aside className="sidebar">
                     <div style={{ marginBottom: 32 }}>
                         <Typography.Text strong style={{ fontSize: 16, color: 'var(--accent)' }}>
-                            当前第 {activeIndex + 1} 步 / 共 {progressItems.length} 步{publishOnlyMode ? '（测试发布模式）' : ''}
+                            当前第 {activeIndex + 1} 步 / 共 {progressItems.length} 步
                         </Typography.Text>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -720,7 +707,6 @@ function App() {
                     items={[
                         { key: 'cookie', label: '全网分发账号', children: <CookieSettings /> },
                         { key: 'voice', label: '声音克隆', children: <VoiceCloneSettings /> },
-                        { key: 'auth', label: '语音 API', children: <ApiKeySettings /> },
                         ...(adminEnabled ? [{ key: 'server', label: '服务器设置', children: <ServerSettings /> }] : []),
                     ]}
                 />

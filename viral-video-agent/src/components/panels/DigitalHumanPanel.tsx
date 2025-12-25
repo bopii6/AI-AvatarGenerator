@@ -116,6 +116,7 @@ function DigitalHumanPanel() {
     const {
         audioPath,
         digitalHumanVideoPath,
+        finalVideoPath,
         originalCopy,
         rewrittenCopy,
         batchCopies,
@@ -128,6 +129,7 @@ function DigitalHumanPanel() {
         setAudioPath,
         setPreview,
         setDigitalHumanVideoPath,
+        setFinalVideoPath,
         setDigitalHumanSelectedCopy,
         setDigitalHumanScriptConfirmed,
         setDigitalHumanGenerating,
@@ -146,6 +148,15 @@ function DigitalHumanPanel() {
     const [isSavingAvatar, setIsSavingAvatar] = useState(false)
 
     const [isSavingToDesktop, setIsSavingToDesktop] = useState(false)
+
+    // 分阶段状态：合成完成后显示下载按钮
+    const [synthesisResult, setSynthesisResult] = useState<{
+        remoteVideoPath: string
+        tempAudioPath?: string
+    } | null>(null)
+    const [isDownloading, setIsDownloading] = useState(false)
+    const [downloadProgress, setDownloadProgress] = useState(0)
+    const [downloadProgressText, setDownloadProgressText] = useState('')
 
     // 当前步骤
     const selectedAvatar = avatars.find(a => a.id === selectedAvatarId)
@@ -193,6 +204,20 @@ function DigitalHumanPanel() {
     const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
     const hasText = textToSpeak.length > 0
     const readyForVideo = transcriptConfirmed && hasAudio
+
+    useEffect(() => {
+        const unsub = window.electronAPI?.on?.('cloud-gpu-download-progress', (_event: any, data: { progress: number; message: string }) => {
+            if (typeof data?.progress === 'number' && !Number.isNaN(data.progress)) {
+                setDownloadProgress(Math.max(0, Math.min(100, data.progress)))
+            }
+            if (typeof data?.message === 'string') {
+                setDownloadProgressText(data.message)
+            }
+        })
+        return () => {
+            if (typeof unsub === 'function') unsub()
+        }
+    }, [])
 
     useEffect(() => {
         if (transcriptCandidates.length === 0) return
@@ -311,13 +336,108 @@ function DigitalHumanPanel() {
 
         if (result?.success && result.data?.videoPath) {
             setDigitalHumanVideoPath(result.data.videoPath)
+            setFinalVideoPath(result.data.videoPath)
             setPreview('video', result.data.videoPath)
             return result.data.videoPath as string
         }
 
         throw new Error(result?.error || '生成失败')
-    }, [setDigitalHumanVideoPath, setPreview])
+    }, [setDigitalHumanVideoPath, setFinalVideoPath, setPreview])
 
+    // 第一阶段：仅合成（不下载）
+    const handleSynthesizeOnly = async () => {
+        if (digitalHumanGenerating) {
+            message.info('正在合成中，请稍候...')
+            return
+        }
+        if (!selectedAvatar) {
+            message.error('请先选择或创建一个数字人形象')
+            return
+        }
+        if (!audioPath) {
+            message.error('请先准备音频：进入「音频生成」录制/合成（克隆你的声音）')
+            return
+        }
+        if (!transcriptConfirmed) {
+            message.warning('请先编辑逐字稿并点击「确认用于出片」')
+            return
+        }
+
+        setDigitalHumanGenerating(true)
+        setDigitalHumanProgress(0, '准备数字人服务...')
+        setSynthesisResult(null)  // 清空之前的合成结果
+
+        try {
+            const ready = await ensureCloudGpuReady()
+            if (!ready) return
+
+            setDigitalHumanProgress(5, '正在提交合成任务...')
+            const result = await window.electronAPI?.invoke('cloud-gpu-synthesize-only', {
+                avatarVideoPath: selectedAvatar.remoteVideoPath,
+                audioPath,
+            })
+
+            console.log('[DigitalHumanPanel] Synthesis result:', JSON.stringify(result, null, 2))
+
+            if (result?.success && result.data?.remoteVideoPath) {
+                console.log('[DigitalHumanPanel] Setting synthesisResult:', result.data.remoteVideoPath)
+                setSynthesisResult({
+                    remoteVideoPath: result.data.remoteVideoPath,
+                    tempAudioPath: result.data.tempAudioPath,
+                })
+                setDigitalHumanProgress(100, '✅ 合成完成！请点击下方「下载视频」按钮')
+                message.success('视频合成完成！请点击「下载视频」按钮获取视频')
+            } else {
+                throw new Error(result?.error || '合成失败')
+            }
+        } catch (e: any) {
+            console.error('[DigitalHumanPanel] Synthesis error:', e)
+            message.error(e.message)
+        } finally {
+            setDigitalHumanGenerating(false)
+        }
+    }
+
+    // 第二阶段：下载已合成的视频
+    const handleDownloadVideo = async () => {
+        if (!synthesisResult?.remoteVideoPath) {
+            message.warning('请先完成视频合成')
+            return
+        }
+        if (isDownloading) {
+            message.info('正在下载中，请稍候...')
+            return
+        }
+
+        setIsDownloading(true)
+        setDownloadProgress(0)
+        setDownloadProgressText('准备下载...请稍候')
+
+        try {
+            const result = await window.electronAPI?.invoke('cloud-gpu-download-video', {
+                remoteVideoPath: synthesisResult.remoteVideoPath,
+                tempAudioPath: synthesisResult.tempAudioPath,
+            })
+
+            if (result?.success && result.data?.videoPath) {
+                setDigitalHumanVideoPath(result.data.videoPath)
+                setFinalVideoPath(result.data.videoPath)
+                setPreview('video', result.data.videoPath)
+                setSynthesisResult(null)  // 清空合成结果
+                setDownloadProgress(100)
+                setDownloadProgressText('✅ 下载完成！')
+                message.success('视频下载完成！')
+            } else {
+                throw new Error(result?.error || '下载失败')
+            }
+        } catch (e: any) {
+            message.error(e.message)
+        } finally {
+            setIsDownloading(false)
+        }
+    }
+
+    // 保留原有的一键生成功能（用于兼容）
     const handleGenerate = async () => {
         if (digitalHumanGenerating) {
             message.info('正在生成中，请稍候...')
@@ -467,206 +587,218 @@ function DigitalHumanPanel() {
                             先确认逐字稿并生成音频，再回到这里生成数字人视频
                         </Typography.Text>
                     </div>
-                            {/* 第一步：逐字稿（先确认内容） */}
-                            <Card
-                                style={{
-                                    borderRadius: 16,
-                                    border: '1px solid rgba(255,255,255,0.06)',
-                                    background: 'rgba(255,255,255,0.02)',
-                                }}
-                                bodyStyle={{ padding: 20 }}
-                            >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                        <FileTextOutlined style={{ fontSize: 18, color: '#faad14' }} />
-                                        <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
-                                            逐字稿（先确认）
-                                        </Typography.Text>
-                                        <Tag color={transcriptConfirmed ? 'green' : 'orange'} style={{ marginInlineStart: 4 }}>
-                                            {transcriptConfirmed ? '已确认' : '待确认'}
-                                        </Tag>
-                                    </div>
-                                    <Space size={8}>
-                                        <Button
-                                            size="small"
-                                            onClick={async () => {
-                                                const text = (digitalHumanSelectedCopy?.copy || textToSpeak || '').trim()
-                                                if (!text) {
-                                                    message.warning('没有可复制的逐字稿')
-                                                    return
-                                                }
-                                                try {
-                                                    await navigator.clipboard.writeText(text)
-                                                    message.success('已复制逐字稿')
-                                                } catch {
-                                                    message.error('复制失败，请手动复制')
-                                                }
-                                            }}
-                                        >
-                                            复制
-                                        </Button>
-                                        {!digitalHumanScriptConfirmed && (
-                                            <Button
-                                                type="primary"
-                                                size="small"
-                                                onClick={() => {
-                                                    const draftText = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
-                                                    if (!draftText) {
-                                                        message.warning('逐字稿为空，无法确认')
-                                                        return
-                                                    }
-                                                    setDigitalHumanScriptConfirmed(true)
-                                                    message.success('已确认逐字稿，将用于本次出片')
-                                                }}
-                                            >
-                                                确认用于出片
-                                            </Button>
-                                        )}
-                                    </Space>
-                                </div>
-
-                                {transcriptCandidates.length > 1 && (
-                                    <div style={{ marginBottom: 12 }}>
-                                        <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 6 }}>
-                                            你有 {transcriptCandidates.length} 份逐字稿，本次只能选择 1 份出片
-                                        </Typography.Text>
-                                        <Select
-                                            value={(digitalHumanSelectedCopy?.title || transcriptCandidates[0]?.title || '').trim()}
-                                            onChange={(title) => {
-                                                const next = transcriptCandidates.find(c => c.title === title)
-                                                if (!next) return
-                                                if (audioPath) setAudioPath(null)
-                                                if (digitalHumanVideoPath) setDigitalHumanVideoPath(null)
-                                                setDigitalHumanSelectedCopy({ title: next.title, copy: next.copy })
-                                            }}
-                                            style={{ width: '100%' }}
-                                            options={transcriptCandidates.map((c) => ({
-                                                value: c.title,
-                                                label: (
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                            {c.title}
-                                                        </span>
-                                                        <Tag color={c.source === 'rewritten' ? 'green' : 'default'} style={{ margin: 0 }}>
-                                                            {c.source === 'rewritten' ? '原创' : '原文'}
-                                                        </Tag>
-                                                    </div>
-                                                ),
-                                            }))}
-                                        />
-                                    </div>
-                                )}
-
-                                <Input.TextArea
-                                    value={digitalHumanSelectedCopy?.copy ?? textToSpeak}
-                                    onChange={(e) => {
-                                        const title = (digitalHumanSelectedCopy?.title || transcriptCandidates[0]?.title || '逐字稿').trim()
-                                        // 文案变更后，必须重新确认；已生成的音频/视频也会失效，避免出片内容不一致
-                                        if (audioPath) setAudioPath(null)
-                                        if (digitalHumanVideoPath) setDigitalHumanVideoPath(null)
-                                        setDigitalHumanSelectedCopy({ title, copy: e.target.value })
+                    {/* 第一步：逐字稿（先确认内容） */}
+                    <Card
+                        style={{
+                            borderRadius: 16,
+                            border: '1px solid rgba(255,255,255,0.06)',
+                            background: 'rgba(255,255,255,0.02)',
+                        }}
+                        bodyStyle={{ padding: 20 }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <FileTextOutlined style={{ fontSize: 18, color: '#faad14' }} />
+                                <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
+                                    逐字稿（先确认）
+                                </Typography.Text>
+                                <Tag color={transcriptConfirmed ? 'green' : 'orange'} style={{ marginInlineStart: 4 }}>
+                                    {transcriptConfirmed ? '已确认' : '待确认'}
+                                </Tag>
+                            </div>
+                            <Space size={8}>
+                                <Button
+                                    size="small"
+                                    onClick={async () => {
+                                        const text = (digitalHumanSelectedCopy?.copy || textToSpeak || '').trim()
+                                        if (!text) {
+                                            message.warning('没有可复制的逐字稿')
+                                            return
+                                        }
+                                        try {
+                                            await navigator.clipboard.writeText(text)
+                                            message.success('已复制逐字稿')
+                                        } catch {
+                                            message.error('复制失败，请手动复制')
+                                        }
                                     }}
-                                    placeholder="这里会展示逐字稿内容（可编辑）。编辑完成后请点击上方「确认用于出片」。"
-                                    autoSize={{ minRows: 6, maxRows: 12 }}
-                                />
-
+                                >
+                                    复制
+                                </Button>
                                 {!digitalHumanScriptConfirmed && (
-                                    <Typography.Text type="secondary" style={{ display: 'block', marginTop: 10, fontSize: 12 }}>
-                                        编辑好逐字稿后，点击上方「确认用于出片」再进入音频生成。
-                                    </Typography.Text>
+                                    <Button
+                                        type="primary"
+                                        size="small"
+                                        onClick={() => {
+                                            const draftText = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
+                                            if (!draftText) {
+                                                message.warning('逐字稿为空，无法确认')
+                                                return
+                                            }
+                                            setDigitalHumanScriptConfirmed(true)
+                                            message.success('已确认逐字稿，将用于本次出片')
+                                        }}
+                                    >
+                                        确认用于出片
+                                    </Button>
                                 )}
-                            </Card>
+                            </Space>
+                        </div>
 
-                            {/* 第二步：准备音频（克隆我的声音） */}
-                            <Card
-                                style={{
-                                    marginTop: 16,
-                                    borderRadius: 16,
-                                    border: '1px solid rgba(255,255,255,0.06)',
-                                    background: 'rgba(255,255,255,0.02)',
-                                }}
-                                bodyStyle={{ padding: 20 }}
-                            >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                        <SoundOutlined style={{ fontSize: 18, color: '#722ed1' }} />
-                                        <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
-                                            准备音频（克隆我的声音）
+                        {transcriptCandidates.length > 1 && (
+                            <div style={{ marginBottom: 12 }}>
+                                <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 6 }}>
+                                    你有 {transcriptCandidates.length} 份逐字稿，本次只能选择 1 份出片
+                                </Typography.Text>
+                                <Select
+                                    value={(digitalHumanSelectedCopy?.title || transcriptCandidates[0]?.title || '').trim()}
+                                    onChange={(title) => {
+                                        const next = transcriptCandidates.find(c => c.title === title)
+                                        if (!next) return
+                                        if (audioPath) setAudioPath(null)
+                                        if (digitalHumanVideoPath) {
+                                            const previousVideoPath = digitalHumanVideoPath
+                                            setDigitalHumanVideoPath(null)
+                                            if (finalVideoPath === previousVideoPath) {
+                                                setFinalVideoPath(null)
+                                            }
+                                        }
+                                        setDigitalHumanSelectedCopy({ title: next.title, copy: next.copy })
+                                    }}
+                                    style={{ width: '100%' }}
+                                    options={transcriptCandidates.map((c) => ({
+                                        value: c.title,
+                                        label: (
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                    {c.title}
+                                                </span>
+                                                <Tag color={c.source === 'rewritten' ? 'green' : 'default'} style={{ margin: 0 }}>
+                                                    {c.source === 'rewritten' ? '原创' : '原文'}
+                                                </Tag>
+                                            </div>
+                                        ),
+                                    }))}
+                                />
+                            </div>
+                        )}
+
+                        <Input.TextArea
+                            value={digitalHumanSelectedCopy?.copy ?? textToSpeak}
+                            onChange={(e) => {
+                                const title = (digitalHumanSelectedCopy?.title || transcriptCandidates[0]?.title || '逐字稿').trim()
+                                // 文案变更后，必须重新确认；已生成的音频/视频也会失效，避免出片内容不一致
+                                if (audioPath) setAudioPath(null)
+                                if (digitalHumanVideoPath) {
+                                    const previousVideoPath = digitalHumanVideoPath
+                                    setDigitalHumanVideoPath(null)
+                                    if (finalVideoPath === previousVideoPath) {
+                                        setFinalVideoPath(null)
+                                    }
+                                }
+                                setDigitalHumanSelectedCopy({ title, copy: e.target.value })
+                            }}
+                            placeholder="这里会展示逐字稿内容（可编辑）。编辑完成后请点击上方「确认用于出片」。"
+                            autoSize={{ minRows: 6, maxRows: 12 }}
+                        />
+
+                        {!digitalHumanScriptConfirmed && (
+                            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 10, fontSize: 12 }}>
+                                编辑好逐字稿后，点击上方「确认用于出片」再进入音频生成。
+                            </Typography.Text>
+                        )}
+                    </Card>
+
+                    {/* 第二步：准备音频（克隆我的声音） */}
+                    <Card
+                        style={{
+                            marginTop: 16,
+                            borderRadius: 16,
+                            border: '1px solid rgba(255,255,255,0.06)',
+                            background: 'rgba(255,255,255,0.02)',
+                        }}
+                        bodyStyle={{ padding: 20 }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <SoundOutlined style={{ fontSize: 18, color: '#722ed1' }} />
+                                <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
+                                    准备音频（克隆我的声音）
+                                </Typography.Text>
+                            </div>
+                            {audioPath ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                                    <div style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 8,
+                                        padding: '6px 12px',
+                                        borderRadius: 8,
+                                        background: 'rgba(82,196,26,0.1)',
+                                        border: '1px solid rgba(82,196,26,0.2)',
+                                    }}>
+                                        <CheckCircleFilled style={{ color: '#52c41a' }} />
+                                        <Typography.Text style={{ color: '#52c41a', fontSize: 13 }}>
+                                            {getBasename(audioPath)}
                                         </Typography.Text>
                                     </div>
-                                    {audioPath ? (
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                                            <div style={{
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: 8,
-                                                padding: '6px 12px',
-                                                borderRadius: 8,
-                                                background: 'rgba(82,196,26,0.1)',
-                                                border: '1px solid rgba(82,196,26,0.2)',
-                                            }}>
-                                                <CheckCircleFilled style={{ color: '#52c41a' }} />
-                                                <Typography.Text style={{ color: '#52c41a', fontSize: 13 }}>
-                                                    {getBasename(audioPath)}
-                                                </Typography.Text>
-                                            </div>
-                                            <Button
-                                                size="small"
-                                                icon={<PlayCircleOutlined />}
-                                                onClick={() => setPreview('audio', audioPath)}
-                                            >
-                                                试听
-                                            </Button>
-                                            <Button
-                                                size="small"
-                                                type="primary"
-                                                onClick={() => setActiveKey('audio')}
-                                                disabled={digitalHumanGenerating}
-                                            >
-                                                更换音色/重新合成
-                                            </Button>
-                                            <Button
-                                                size="small"
-                                                danger
-                                                onClick={() => {
-                                                    Modal.confirm({
-                                                        title: '重做音频？',
-                                                        content: '将清空当前已生成的音频文件，并跳转到「音频生成」重新合成。',
-                                                        okText: '清空并前往',
-                                                        cancelText: '取消',
-                                                        onOk: () => {
-                                                            setAudioPath(null)
-                                                            setActiveKey('audio')
-                                                        },
-                                                    })
-                                                }}
-                                                disabled={digitalHumanGenerating}
-                                            >
-                                                重做
-                                            </Button>
-                                        </div>
-                                    ) : (
-                                        <Button
-                                            type="primary"
-                                            icon={<AudioOutlined />}
-                                            onClick={() => setActiveKey('audio')}
-                                            disabled={!transcriptConfirmed || digitalHumanGenerating}
-                                        >
-                                            去录制/合成音频
-                                        </Button>
-                                    )}
+                                    <Button
+                                        size="small"
+                                        icon={<PlayCircleOutlined />}
+                                        onClick={() => setPreview('audio', audioPath)}
+                                    >
+                                        试听
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        onClick={() => setActiveKey('audio')}
+                                        disabled={digitalHumanGenerating}
+                                    >
+                                        更换音色/重新合成
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        danger
+                                        onClick={() => {
+                                            Modal.confirm({
+                                                title: '重做音频？',
+                                                content: '将清空当前已生成的音频文件，并跳转到「音频生成」重新合成。',
+                                                okText: '清空并前往',
+                                                cancelText: '取消',
+                                                onOk: () => {
+                                                    setAudioPath(null)
+                                                    setActiveKey('audio')
+                                                },
+                                            })
+                                        }}
+                                        disabled={digitalHumanGenerating}
+                                    >
+                                        重做
+                                    </Button>
                                 </div>
-                                {!!selectedCloudVoiceId && (
-                                    <Typography.Text type="secondary" style={{ display: 'block', marginTop: 10, fontSize: 12 }}>
-                                        当前选择的声音模型：{selectedCloudVoiceId}
-                                    </Typography.Text>
-                                )}
-                                {!audioPath && (
-                                    <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12, fontSize: 13 }}>
-                                        💡 提示：先确认逐字稿，再合成音频，避免生成错内容
-                                    </Typography.Text>
-                                )}
-                            </Card>
+                            ) : (
+                                <Button
+                                    type="primary"
+                                    icon={<AudioOutlined />}
+                                    onClick={() => setActiveKey('audio')}
+                                    disabled={!transcriptConfirmed || digitalHumanGenerating}
+                                >
+                                    去录制/合成音频
+                                </Button>
+                            )}
+                        </div>
+                        {!!selectedCloudVoiceId && (
+                            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 10, fontSize: 12 }}>
+                                当前选择的声音模型：{selectedCloudVoiceId}
+                            </Typography.Text>
+                        )}
+                        {!audioPath && (
+                            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12, fontSize: 13 }}>
+                                💡 提示：先确认逐字稿，再合成音频，避免生成错内容
+                            </Typography.Text>
+                        )}
+                    </Card>
                 </div>
 
                 <div
@@ -688,302 +820,359 @@ function DigitalHumanPanel() {
                             音频就绪后在此挑选形象并生成视频
                         </Typography.Text>
                     </div>
-                            {/* 第一步：选择形象 */}
-                            <Card
-                                style={{
-                                    marginBottom: 16,
-                                    borderRadius: 16,
-                                    border: '1px solid rgba(255,255,255,0.06)',
-                                    background: 'rgba(255,255,255,0.02)',
-                                }}
-                                bodyStyle={{ padding: 20 }}
-                            >
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                            <UserOutlined style={{ fontSize: 18, color: '#1677ff' }} />
-                                            <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
-                                                我的数字人形象
+                    {/* 第一步：选择形象 */}
+                    <Card
+                        style={{
+                            marginBottom: 16,
+                            borderRadius: 16,
+                            border: '1px solid rgba(255,255,255,0.06)',
+                            background: 'rgba(255,255,255,0.02)',
+                        }}
+                        bodyStyle={{ padding: 20 }}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <UserOutlined style={{ fontSize: 18, color: '#1677ff' }} />
+                                <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
+                                    我的数字人形象
+                                </Typography.Text>
+                            </div>
+                            <Space>
+                                <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频' : '首次加载可能需要一点时间'}>
+                                    <span>
+                                        <Button
+                                            icon={<ReloadOutlined />}
+                                            onClick={() => {
+                                                setAvatarsLoaded(false)
+                                                void refreshAvatars()
+                                            }}
+                                            disabled={!readyForVideo || digitalHumanGenerating || avatarsLoading}
+                                            style={{ borderRadius: 8 }}
+                                        >
+                                            {avatarsLoaded ? '刷新列表' : '加载形象'}
+                                        </Button>
+                                    </span>
+                                </Tooltip>
+
+                                <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频' : undefined}>
+                                    <span>
+                                        <Button
+                                            type="primary"
+                                            icon={<PlusOutlined />}
+                                            onClick={() => setShowNewAvatarModal(true)}
+                                            disabled={!readyForVideo || digitalHumanGenerating || avatarsLoading}
+                                            style={{
+                                                borderRadius: 8,
+                                                background: 'linear-gradient(135deg, #1677ff, #4096ff)',
+                                                border: 'none',
+                                                opacity: (!readyForVideo || digitalHumanGenerating || avatarsLoading) ? 0.6 : 1,
+                                            }}
+                                        >
+                                            创建新形象
+                                        </Button>
+                                    </span>
+                                </Tooltip>
+                            </Space>
+                        </div>
+
+                        {avatars.length === 0 ? (
+                            <Empty
+                                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                description={
+                                    !readyForVideo ? (
+                                        <div>
+                                            <div style={{ marginBottom: 8 }}>先完成左侧步骤</div>
+                                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                                确认逐字稿并准备好音频后，点击右上角「加载形象」即可加载列表。
                                             </Typography.Text>
                                         </div>
-                                        <Space>
-                                            <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频' : '首次加载可能需要一点时间'}>
-                                                <span>
-                                                    <Button
-                                                        icon={<ReloadOutlined />}
-                                                        onClick={() => {
-                                                            setAvatarsLoaded(false)
-                                                            void refreshAvatars()
-                                                        }}
-                                                        disabled={!readyForVideo || digitalHumanGenerating || avatarsLoading}
-                                                        style={{ borderRadius: 8 }}
-                                                    >
-                                                        {avatarsLoaded ? '刷新列表' : '加载形象'}
-                                                    </Button>
-                                                </span>
-                                            </Tooltip>
-
-                                            <Tooltip title={!readyForVideo ? '先完成左侧逐字稿确认 + 音频' : undefined}>
-                                                <span>
-                                                    <Button
-                                                        type="primary"
-                                                        icon={<PlusOutlined />}
-                                                        onClick={() => setShowNewAvatarModal(true)}
-                                                        disabled={!readyForVideo || digitalHumanGenerating || avatarsLoading}
-                                                        style={{
-                                                            borderRadius: 8,
-                                                            background: 'linear-gradient(135deg, #1677ff, #4096ff)',
-                                                            border: 'none',
-                                                            opacity: (!readyForVideo || digitalHumanGenerating || avatarsLoading) ? 0.6 : 1,
-                                                        }}
-                                                    >
-                                                        创建新形象
-                                                    </Button>
-                                                </span>
-                                            </Tooltip>
-                                        </Space>
-                                    </div>
-
-                                {avatars.length === 0 ? (
-                                    <Empty
-                                        image={Empty.PRESENTED_IMAGE_SIMPLE}
-                                        description={
-                                            !readyForVideo ? (
-                                                <div>
-                                                    <div style={{ marginBottom: 8 }}>先完成左侧步骤</div>
-                                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                                        确认逐字稿并准备好音频后，点击右上角「加载形象」即可加载列表。
-                                                    </Typography.Text>
-                                                </div>
-                                            ) : avatarsLoading ? (
-                                                <div>
-                                                    <div style={{ marginBottom: 8 }}>正在加载形象…</div>
-                                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                                        首次加载可能需要一点时间；如长时间无响应，可点击右上角「设置」检查服务器配置。
-                                                    </Typography.Text>
-                                                </div>
-                                            ) : !avatarsLoaded ? (
-                                                <div>
-                                                    <div style={{ marginBottom: 10 }}>还没加载形象列表</div>
-                                                    <Button
-                                                        icon={<ReloadOutlined />}
-                                                        onClick={() => {
-                                                            setAvatarsLoaded(false)
-                                                            void refreshAvatars()
-                                                        }}
-                                                        disabled={digitalHumanGenerating}
-                                                        style={{ borderRadius: 8 }}
-                                                    >
-                                                        立即加载
-                                                    </Button>
-                                                </div>
-                                            ) : (
-                                                <div>
-                                                    <div style={{ marginBottom: 8 }}>还没有数字人形象</div>
-                                                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                                        点击“创建新形象”上传一段说话视频，即可克隆你的数字分身
-                                                    </Typography.Text>
-                                                </div>
-                                            )
-                                        }
-                                    />
-                                ) : (
-                                    <div style={{
-                                        display: 'grid',
-                                        gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
-                                        gap: 12,
-                                    }}>
-                                        {avatars.map(avatar => (
-                                            <div
-                                                key={avatar.id}
-                                                onClick={() => setSelectedAvatarId(avatar.id)}
-                                                style={{
-                                                    position: 'relative',
-                                                    padding: 12,
-                                                    borderRadius: 12,
-                                                    border: selectedAvatarId === avatar.id
-                                                        ? '2px solid #1677ff'
-                                                        : '1px solid rgba(255,255,255,0.08)',
-                                                    background: selectedAvatarId === avatar.id
-                                                        ? 'rgba(22,119,255,0.1)'
-                                                        : 'rgba(255,255,255,0.02)',
-                                                    cursor: 'pointer',
-                                                    transition: 'all 0.2s ease',
+                                    ) : avatarsLoading ? (
+                                        <div>
+                                            <div style={{ marginBottom: 8 }}>正在加载形象…</div>
+                                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                                首次加载可能需要一点时间；如长时间无响应，可点击右上角「设置」检查服务器配置。
+                                            </Typography.Text>
+                                        </div>
+                                    ) : !avatarsLoaded ? (
+                                        <div>
+                                            <div style={{ marginBottom: 10 }}>还没加载形象列表</div>
+                                            <Button
+                                                icon={<ReloadOutlined />}
+                                                onClick={() => {
+                                                    setAvatarsLoaded(false)
+                                                    void refreshAvatars()
                                                 }}
+                                                disabled={digitalHumanGenerating}
+                                                style={{ borderRadius: 8 }}
                                             >
-                                                <div style={{
-                                                    width: '100%',
-                                                    aspectRatio: '16/9',
-                                                    borderRadius: 8,
-                                                    background: 'linear-gradient(135deg, rgba(22,119,255,0.2), rgba(118,75,162,0.2))',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
-                                                    marginBottom: 8,
-                                                    overflow: 'hidden',
-                                                }}>
-                                                    {avatar.localPreviewPath ? (
-                                                        <video
-                                                            src={`file://${avatar.localPreviewPath}`}
-                                                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                                            muted
-                                                        />
-                                                    ) : (
-                                                        <UserOutlined style={{ fontSize: 32, color: 'rgba(255,255,255,0.3)' }} />
-                                                    )}
-                                                </div>
-                                                <div style={{
-                                                    fontSize: 14,
-                                                    fontWeight: 500,
-                                                    color: '#fff',
-                                                    overflow: 'hidden',
-                                                    textOverflow: 'ellipsis',
-                                                    whiteSpace: 'nowrap',
-                                                }}>
-                                                    {avatar.name}
-                                                </div>
-                                                {selectedAvatarId === avatar.id && (
-                                                    <CheckCircleFilled style={{
-                                                        position: 'absolute',
-                                                        top: 8,
-                                                        right: 8,
-                                                        fontSize: 18,
-                                                        color: '#1677ff',
-                                                    }} />
-                                                )}
-                                                <Tooltip title="删除">
-                                                    <Button
-                                                        type="text"
-                                                        size="small"
-                                                        icon={<DeleteOutlined />}
-                                                        onClick={(e) => {
-                                                            e.stopPropagation()
-                                                            handleDeleteAvatar(avatar.id)
-                                                        }}
-                                                        style={{
-                                                            position: 'absolute',
-                                                            bottom: 8,
-                                                            right: 8,
-                                                            color: 'rgba(255,255,255,0.3)',
-                                                        }}
-                                                    />
-                                                </Tooltip>
-                                            </div>
-                                        ))}
+                                                立即加载
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <div style={{ marginBottom: 8 }}>还没有数字人形象</div>
+                                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                                点击“创建新形象”上传一段说话视频，即可克隆你的数字分身
+                                            </Typography.Text>
+                                        </div>
+                                    )
+                                }
+                            />
+                        ) : (
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+                                gap: 12,
+                            }}>
+                                {avatars.map(avatar => (
+                                    <div
+                                        key={avatar.id}
+                                        onClick={() => setSelectedAvatarId(avatar.id)}
+                                        style={{
+                                            position: 'relative',
+                                            padding: 12,
+                                            borderRadius: 12,
+                                            border: selectedAvatarId === avatar.id
+                                                ? '2px solid #1677ff'
+                                                : '1px solid rgba(255,255,255,0.08)',
+                                            background: selectedAvatarId === avatar.id
+                                                ? 'rgba(22,119,255,0.1)'
+                                                : 'rgba(255,255,255,0.02)',
+                                            cursor: 'pointer',
+                                            transition: 'all 0.2s ease',
+                                        }}
+                                    >
+                                        <div style={{
+                                            width: '100%',
+                                            aspectRatio: '16/9',
+                                            borderRadius: 8,
+                                            background: 'linear-gradient(135deg, rgba(22,119,255,0.2), rgba(118,75,162,0.2))',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            marginBottom: 8,
+                                            overflow: 'hidden',
+                                        }}>
+                                            {avatar.localPreviewPath ? (
+                                                <video
+                                                    src={`file://${avatar.localPreviewPath}`}
+                                                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                                    muted
+                                                />
+                                            ) : (
+                                                <UserOutlined style={{ fontSize: 32, color: 'rgba(255,255,255,0.3)' }} />
+                                            )}
+                                        </div>
+                                        <div style={{
+                                            fontSize: 14,
+                                            fontWeight: 500,
+                                            color: '#fff',
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap',
+                                        }}>
+                                            {avatar.name}
+                                        </div>
+                                        {selectedAvatarId === avatar.id && (
+                                            <CheckCircleFilled style={{
+                                                position: 'absolute',
+                                                top: 8,
+                                                right: 8,
+                                                fontSize: 18,
+                                                color: '#1677ff',
+                                            }} />
+                                        )}
+                                        <Tooltip title="删除">
+                                            <Button
+                                                type="text"
+                                                size="small"
+                                                icon={<DeleteOutlined />}
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    handleDeleteAvatar(avatar.id)
+                                                }}
+                                                style={{
+                                                    position: 'absolute',
+                                                    bottom: 8,
+                                                    right: 8,
+                                                    color: 'rgba(255,255,255,0.3)',
+                                                }}
+                                            />
+                                        </Tooltip>
                                     </div>
-                                )}
-                            </Card>
+                                ))}
+                            </div>
+                        )}
+                    </Card>
 
-                            {/* 第三步：生成视频 */}
-                            <Card
-                                style={{
-                                    borderRadius: 16,
-                                    border: (hasAvatar && (hasAudio || hasText))
-                                        ? '2px solid rgba(22,119,255,0.4)'
-                                        : '1px solid rgba(255,255,255,0.06)',
-                                    background: (hasAvatar && (hasAudio || hasText))
-                                        ? 'linear-gradient(135deg, rgba(22,119,255,0.08) 0%, rgba(118,75,162,0.05) 100%)'
-                                        : 'rgba(255,255,255,0.02)',
-                                }}
-                                bodyStyle={{ padding: 24 }}
-                            >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                                    <VideoCameraOutlined style={{ fontSize: 18, color: '#1677ff' }} />
-                                    <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
-                                        生成口播视频（分身出镜）
+                    {/* 第三步：生成视频 */}
+                    <Card
+                        style={{
+                            borderRadius: 16,
+                            border: (hasAvatar && (hasAudio || hasText))
+                                ? '2px solid rgba(22,119,255,0.4)'
+                                : '1px solid rgba(255,255,255,0.06)',
+                            background: (hasAvatar && (hasAudio || hasText))
+                                ? 'linear-gradient(135deg, rgba(22,119,255,0.08) 0%, rgba(118,75,162,0.05) 100%)'
+                                : 'rgba(255,255,255,0.02)',
+                        }}
+                        bodyStyle={{ padding: 24 }}
+                    >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                            <VideoCameraOutlined style={{ fontSize: 18, color: '#1677ff' }} />
+                            <Typography.Text style={{ fontSize: 16, fontWeight: 600 }}>
+                                生成口播视频（分身出镜）
+                            </Typography.Text>
+                        </div>
+
+
+                        {digitalHumanGenerating && (
+                            <div style={{ marginBottom: 20 }}>
+                                <Progress
+                                    percent={digitalHumanProgress}
+                                    status="active"
+                                    strokeColor={{
+                                        '0%': '#1677ff',
+                                        '100%': '#722ed1',
+                                    }}
+                                    style={{ marginBottom: 8 }}
+                                />
+                                <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.65)' }}>
+                                    {digitalHumanProgressText}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 下载进度条 */}
+                        {isDownloading && (
+                            <div style={{ marginBottom: 20 }}>
+                                <Progress
+                                    percent={downloadProgress}
+                                    status="active"
+                                    strokeColor={{
+                                        '0%': '#52c41a',
+                                        '100%': '#73d13d',
+                                    }}
+                                    style={{ marginBottom: 8 }}
+                                />
+                                <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.65)' }}>
+                                    {downloadProgressText}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 合成完成提示 + 下载按钮 */}
+                        {synthesisResult && !digitalHumanGenerating && !isDownloading && (
+                            <div style={{
+                                marginBottom: 16,
+                                padding: 16,
+                                borderRadius: 12,
+                                background: 'rgba(82,196,26,0.1)',
+                                border: '1px solid rgba(82,196,26,0.3)',
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                                    <CheckCircleFilled style={{ color: '#52c41a', fontSize: 18 }} />
+                                    <Typography.Text style={{ color: '#52c41a', fontWeight: 600 }}>
+                                        视频合成完成！
                                     </Typography.Text>
                                 </div>
-
-                                {digitalHumanGenerating && (
-                                    <div style={{ marginBottom: 20 }}>
-                                        <Progress
-                                            percent={digitalHumanProgress}
-                                            status="active"
-                                            strokeColor={{
-                                                '0%': '#1677ff',
-                                                '100%': '#722ed1',
-                                            }}
-                                            style={{ marginBottom: 8 }}
-                                        />
-                                        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.65)' }}>
-                                            {digitalHumanProgressText}
-                                        </div>
-                                    </div>
-                                )}
-
                                 <Button
                                     type="primary"
                                     size="large"
-                                    icon={<RocketOutlined />}
-                                    onClick={handleGenerate}
-                                    loading={digitalHumanGenerating}
-                                    disabled={!hasAvatar || !hasAudio || !transcriptConfirmed}
+                                    icon={<DownloadOutlined />}
+                                    onClick={handleDownloadVideo}
                                     block
                                     style={{
-                                        height: 52,
-                                        borderRadius: 12,
-                                        fontSize: 16,
+                                        height: 48,
+                                        borderRadius: 10,
+                                        fontSize: 15,
                                         fontWeight: 600,
-                                        background: (hasAvatar && hasAudio)
-                                            ? 'linear-gradient(135deg, #1677ff, #722ed1)'
-                                            : undefined,
+                                        background: 'linear-gradient(135deg, #52c41a, #73d13d)',
                                         border: 'none',
-                                        boxShadow: (hasAvatar && hasAudio)
-                                            ? '0 8px 24px rgba(22,119,255,0.3)'
-                                            : undefined,
                                     }}
                                 >
-                                    {digitalHumanGenerating ? '正在生成中...' : '生成视频'}
+                                    下载视频到本地
                                 </Button>
+                            </div>
+                        )}
 
-                                {digitalHumanVideoPath && !digitalHumanGenerating && (
-                                    <div style={{
-                                        marginTop: 14,
-                                        padding: 12,
-                                        borderRadius: 12,
-                                        background: 'rgba(82,196,26,0.08)',
-                                        border: '1px solid rgba(82,196,26,0.18)',
-                                        display: 'flex',
-                                        justifyContent: 'space-between',
-                                        alignItems: 'center',
-                                        gap: 12,
+                        {/* 合成按钮 - 仅当没有合成结果时显示 */}
+                        {!synthesisResult && (
+                            <Button
+                                type="primary"
+                                size="large"
+                                icon={<RocketOutlined />}
+                                onClick={handleSynthesizeOnly}
+                                loading={digitalHumanGenerating}
+                                disabled={!hasAvatar || !hasAudio || !transcriptConfirmed || isDownloading}
+                                block
+                                style={{
+                                    height: 52,
+                                    borderRadius: 12,
+                                    fontSize: 16,
+                                    fontWeight: 600,
+                                    background: (hasAvatar && hasAudio)
+                                        ? 'linear-gradient(135deg, #1677ff, #722ed1)'
+                                        : undefined,
+                                    border: 'none',
+                                    boxShadow: (hasAvatar && hasAudio)
+                                        ? '0 8px 24px rgba(22,119,255,0.3)'
+                                        : undefined,
+                                }}
+                            >
+                                {digitalHumanGenerating ? '正在合成中...' : '开始合成视频'}
+                            </Button>
+                        )}
+
+                        {digitalHumanVideoPath && !digitalHumanGenerating && (
+                            <div style={{
+                                marginTop: 14,
+                                padding: 12,
+                                borderRadius: 12,
+                                background: 'rgba(82,196,26,0.08)',
+                                border: '1px solid rgba(82,196,26,0.18)',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                gap: 12,
+                            }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                                    <Typography.Text style={{ color: 'rgba(255,255,255,0.88)', fontWeight: 600 }}>
+                                        生成完成
+                                    </Typography.Text>
+                                    <Typography.Text style={{
+                                        color: 'rgba(255,255,255,0.65)',
+                                        fontSize: 12,
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
                                     }}>
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                                            <Typography.Text style={{ color: 'rgba(255,255,255,0.88)', fontWeight: 600 }}>
-                                                生成完成
-                                            </Typography.Text>
-                                            <Typography.Text style={{
-                                                color: 'rgba(255,255,255,0.65)',
-                                                fontSize: 12,
-                                                overflow: 'hidden',
-                                                textOverflow: 'ellipsis',
-                                                whiteSpace: 'nowrap',
-                                            }}>
-                                                {getBasename(digitalHumanVideoPath)}
-                                            </Typography.Text>
-                                        </div>
-                                        <Space>
-                                            <Button
-                                                size="small"
-                                                icon={<PlayCircleOutlined />}
-                                                onClick={() => setPreview('video', digitalHumanVideoPath)}
-                                            >
-                                                预览
-                                            </Button>
-                                            <Button
-                                                size="small"
-                                                type="primary"
-                                                icon={<DownloadOutlined />}
-                                                loading={isSavingToDesktop}
-                                                onClick={handleSaveResultToDesktop}
-                                            >
-                                                下载到桌面
-                                            </Button>
-                                        </Space>
-                                    </div>
-                                )}
+                                        {getBasename(digitalHumanVideoPath)}
+                                    </Typography.Text>
+                                </div>
+                                <Space>
+                                    <Button
+                                        size="small"
+                                        icon={<PlayCircleOutlined />}
+                                        onClick={() => setPreview('video', digitalHumanVideoPath)}
+                                    >
+                                        预览
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        icon={<DownloadOutlined />}
+                                        loading={isSavingToDesktop}
+                                        onClick={handleSaveResultToDesktop}
+                                    >
+                                        下载到桌面
+                                    </Button>
+                                </Space>
+                            </div>
+                        )}
 
 
-                            </Card>
+                    </Card>
                 </div>
             </div>
 

@@ -75,6 +75,7 @@ appendNoProxyHost(process.env.CLOUD_GPU_SERVER_URL)
 
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { registerIpcHandlers } from './ipcHandlers'
+import { checkForUpdatesAndNotify } from '../src/services/updateService'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -109,6 +110,13 @@ function createWindow() {
     } else {
         mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
     }
+
+    // 窗口加载完成后检查更新（延迟 3 秒，避免影响启动速度）
+    mainWindow.webContents.once('did-finish-load', () => {
+        setTimeout(() => {
+            checkForUpdatesAndNotify().catch(console.error)
+        }, 3000)
+    })
 
     mainWindow.on('closed', () => {
         mainWindow = null
