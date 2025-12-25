@@ -55,6 +55,12 @@ export interface PipelineState {
     setDigitalHumanGenerating: (generating: boolean) => void
     setDigitalHumanProgress: (progress: number, text?: string) => void
 
+    digitalHumanDownloading: boolean
+    digitalHumanDownloadProgress: number
+    digitalHumanDownloadText: string
+    setDigitalHumanDownloading: (downloading: boolean) => void
+    setDigitalHumanDownloadProgress: (progress: number, text?: string) => void
+
     // 生成的音频路径
     audioPath: string | null
     setAudioPath: (path: string | null) => void
@@ -117,6 +123,9 @@ const initialState = {
     digitalHumanGenerating: false,
     digitalHumanProgress: 0,
     digitalHumanProgressText: '',
+    digitalHumanDownloading: false,
+    digitalHumanDownloadProgress: 0,
+    digitalHumanDownloadText: '',
     audioPath: null,
     inputAudioPath: null,
     digitalHumanVideoPath: null,
@@ -153,6 +162,12 @@ export const useAppStore = create<PipelineState>((set) => ({
     setDigitalHumanGenerating: (generating) => set({ digitalHumanGenerating: generating }),
     setDigitalHumanProgress: (progress, text) =>
         set({ digitalHumanProgress: progress, digitalHumanProgressText: text ?? '' }),
+    setDigitalHumanDownloading: (downloading) => set({ digitalHumanDownloading: downloading }),
+    setDigitalHumanDownloadProgress: (progress, text) =>
+        set({
+            digitalHumanDownloadProgress: progress,
+            digitalHumanDownloadText: text ?? '',
+        }),
     setAudioPath: (path) => set({ audioPath: path }),
     setInputAudioPath: (path) => set({ inputAudioPath: path }),
     setDigitalHumanVideoPath: (path) => set({ digitalHumanVideoPath: path }),

@@ -1,7 +1,7 @@
 {
   "name": "viral-video-agent",
-  "version": "1.0.0",
-  "description": "一键追爆 - 全自动AI智能体",
+  "version": "1.1.0",
+  "description": "360行 AI智能体大脑 ",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev:clean": "node scripts/clean.js",

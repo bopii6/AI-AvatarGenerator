@@ -74,6 +74,17 @@ function App() {
     }, [])
 
     useEffect(() => {
+        const removeListener = window.electronAPI?.on?.('cloud-gpu-download-progress', (data: { progress?: number; message?: string }) => {
+            const progress = typeof data?.progress === 'number' ? data.progress : 0
+            const text = typeof data?.message === 'string' ? data.message : ''
+            useAppStore.getState().setDigitalHumanDownloadProgress(Math.max(0, Math.min(100, progress)), text)
+        })
+        return () => {
+            if (typeof removeListener === 'function') removeListener()
+        }
+    }, [])
+
+    useEffect(() => {
         const loadRuntimeFlags = async () => {
             try {
                 const res = await window.electronAPI?.invoke('config-get')

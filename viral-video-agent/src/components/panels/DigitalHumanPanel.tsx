@@ -135,6 +135,11 @@ function DigitalHumanPanel() {
         setDigitalHumanGenerating,
         setDigitalHumanProgress,
         setActiveKey,
+        digitalHumanDownloading,
+        digitalHumanDownloadProgress,
+        digitalHumanDownloadText,
+        setDigitalHumanDownloading,
+        setDigitalHumanDownloadProgress,
     } = useAppStore()
 
     // 状态
@@ -154,10 +159,6 @@ function DigitalHumanPanel() {
         remoteVideoPath: string
         tempAudioPath?: string
     } | null>(null)
-    const [isDownloading, setIsDownloading] = useState(false)
-    const [downloadProgress, setDownloadProgress] = useState(0)
-    const [downloadProgressText, setDownloadProgressText] = useState('')
-
     // 当前步骤
     const selectedAvatar = avatars.find(a => a.id === selectedAvatarId)
     const hasAvatar = !!selectedAvatar
@@ -204,20 +205,6 @@ function DigitalHumanPanel() {
     const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
     const hasText = textToSpeak.length > 0
     const readyForVideo = transcriptConfirmed && hasAudio
-
-    useEffect(() => {
-        const unsub = window.electronAPI?.on?.('cloud-gpu-download-progress', (data: { progress: number; message: string }) => {
-            if (typeof data?.progress === 'number' && !Number.isNaN(data.progress)) {
-                setDownloadProgress(Math.max(0, Math.min(100, data.progress)))
-            }
-            if (typeof data?.message === 'string') {
-                setDownloadProgressText(data.message)
-            }
-        })
-        return () => {
-            if (typeof unsub === 'function') unsub()
-        }
-    }, [])
 
     useEffect(() => {
         if (transcriptCandidates.length === 0) return
@@ -404,14 +391,13 @@ function DigitalHumanPanel() {
             message.warning('请先完成视频合成')
             return
         }
-        if (isDownloading) {
+        if (digitalHumanDownloading) {
             message.info('正在下载中，请稍候...')
             return
         }
 
-        setIsDownloading(true)
-        setDownloadProgress(0)
-        setDownloadProgressText('准备下载...请稍候')
+        setDigitalHumanDownloading(true)
+        setDigitalHumanDownloadProgress(0, '准备下载...请稍候')
 
         try {
             const result = await window.electronAPI?.invoke('cloud-gpu-download-video', {
@@ -424,8 +410,7 @@ function DigitalHumanPanel() {
                 setFinalVideoPath(result.data.videoPath)
                 setPreview('video', result.data.videoPath)
                 setSynthesisResult(null)  // 清空合成结果
-                setDownloadProgress(100)
-                setDownloadProgressText('✅ 下载完成！')
+                setDigitalHumanDownloadProgress(100, '✅ 下载完成！')
                 message.success('视频下载完成！')
             } else {
                 throw new Error(result?.error || '下载失败')
@@ -433,7 +418,7 @@ function DigitalHumanPanel() {
         } catch (e: any) {
             message.error(e.message)
         } finally {
-            setIsDownloading(false)
+            setDigitalHumanDownloading(false)
         }
     }
 
@@ -1044,10 +1029,10 @@ function DigitalHumanPanel() {
                         )}
 
                         {/* 下载进度条 */}
-                        {isDownloading && (
+                        {digitalHumanDownloading && (
                             <div style={{ marginBottom: 20 }}>
                                 <Progress
-                                    percent={downloadProgress}
+                                    percent={digitalHumanDownloadProgress}
                                     status="active"
                                     strokeColor={{
                                         '0%': '#52c41a',
@@ -1056,13 +1041,13 @@ function DigitalHumanPanel() {
                                     style={{ marginBottom: 8 }}
                                 />
                                 <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.65)' }}>
-                                    {downloadProgressText}
+                                    {digitalHumanDownloadText}
                                 </div>
                             </div>
                         )}
 
                         {/* 合成完成提示 + 下载按钮 */}
-                        {synthesisResult && !digitalHumanGenerating && !isDownloading && (
+                        {synthesisResult && !digitalHumanGenerating && !digitalHumanDownloading && (
                             <div style={{
                                 marginBottom: 16,
                                 padding: 16,
@@ -1104,7 +1089,7 @@ function DigitalHumanPanel() {
                                 icon={<RocketOutlined />}
                                 onClick={handleSynthesizeOnly}
                                 loading={digitalHumanGenerating}
-                                disabled={!hasAvatar || !hasAudio || !transcriptConfirmed || isDownloading}
+                                disabled={!hasAvatar || !hasAudio || !transcriptConfirmed || digitalHumanDownloading}
                                 block
                                 style={{
                                     height: 52,

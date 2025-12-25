@@ -886,6 +886,28 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
+
+    ipcMain.handle('select-image-file', async () => {
+        try {
+            if (!mainWindow) {
+                throw new Error('??????')
+            }
+            const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+                title: '??????',
+                properties: ['openFile'],
+                filters: [
+                    { name: '??', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
+                ],
+            })
+            if (canceled || !filePaths || filePaths.length === 0) {
+                return { success: false, canceled: true }
+            }
+            return { success: true, filePath: filePaths[0] }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
+
     // ========== 语音转文字 ==========
     ipcMain.handle('transcribe-audio', async (_event, videoPath: string) => {
         try {
