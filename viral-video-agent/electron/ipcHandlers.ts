@@ -8,7 +8,16 @@ import path from 'path'
 import { downloadDouyinVideo, fetchProfileVideos, isProfileUrl } from '../src/services/douyinService'
 import { transcribeAudio, AsrConfig } from '../src/services/asrService'
 import { generateSpeechFile, TtsConfig, getVoiceOptions } from '../src/services/ttsService'
-import { rewriteCopy, generateTitles, generateHashtags, analyzeCopyPattern, HunyuanConfig } from '../src/services/hunyuanService'
+import {
+    rewriteCopy,
+    generateTitles,
+    generateHashtags,
+    analyzeCopyPattern,
+    generateBenchmarkTopics,
+    generateBenchmarkScript,
+    diagnoseAccount,
+    HunyuanConfig,
+} from '../src/services/hunyuanService'
 import {
     getDefaultConfig as getDigitalHumanConfig,
     generateVideo as generateDigitalHumanVideo,
@@ -1080,6 +1089,48 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             const result = await analyzeCopyPattern(
                 config.tencent as HunyuanConfig,
                 copies
+            )
+            return { success: true, data: result }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
+
+    // ========== 对标博主：生成选题/脚本 ==========
+    ipcMain.handle(
+        'benchmark-generate-topics',
+        async (
+            _event,
+            payload: { profileUrl?: string; samples: Array<{ title: string; transcript: string }>; count?: number }
+        ) => {
+            try {
+                const count = typeof payload?.count === 'number' ? payload.count : 4
+                const topics = await generateBenchmarkTopics(config.tencent as HunyuanConfig, payload, count)
+                return { success: true, data: topics }
+            } catch (error: any) {
+                return { success: false, error: error.message }
+            }
+        }
+    )
+
+    ipcMain.handle(
+        'benchmark-generate-script',
+        async (_event, payload: { profileUrl?: string; samples: Array<{ title: string; transcript: string }>; topic: string }) => {
+            try {
+                const script = await generateBenchmarkScript(config.tencent as HunyuanConfig, payload)
+                return { success: true, data: script }
+            } catch (error: any) {
+                return { success: false, error: error.message }
+            }
+        }
+    )
+
+    // ========== 账号诊断（结构化报告）==========
+    ipcMain.handle('account-diagnose', async (_event, payload: { profileUrl?: string; samples: Array<{ title: string; transcript: string }> }) => {
+        try {
+            const result = await diagnoseAccount(
+                config.tencent as HunyuanConfig,
+                payload
             )
             return { success: true, data: result }
         } catch (error: any) {

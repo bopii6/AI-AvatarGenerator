@@ -1,7 +1,8 @@
-import { Button, Input, Space, message, Typography, Divider, Tag } from 'antd'
+import { Button, Input, Space, message, Typography, Divider, Tag, Progress } from 'antd'
 import { BulbOutlined, CopyOutlined, DownOutlined, RightOutlined, ThunderboltOutlined, FireOutlined, CheckCircleOutlined, SyncOutlined } from '@ant-design/icons'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../../store/appStore'
+import { auditCopyText, LEGAL_AUDIT_BASIS, type LegalAuditReport } from '../../services/legalAuditService'
 
 const { TextArea } = Input
 
@@ -26,7 +27,29 @@ function RewritePanel() {
     const [analysisResult, setAnalysisResult] = useState<string>('')
     const [syncTime, setSyncTime] = useState<string>('')
 
+    const [legalAuditRunning, setLegalAuditRunning] = useState<Record<number, boolean>>({})
+    const [legalAuditProgress, setLegalAuditProgress] = useState<Record<number, number>>({})
+    const [legalAuditReports, setLegalAuditReports] = useState<Record<number, LegalAuditReport>>({})
+    const legalAuditTimersRef = useRef<Record<number, ReturnType<typeof setInterval>>>({})
+
     const { batchCopies, originalCopy, setRewrittenCopy, setPreview, updateBatchRewrittenCopy, setDigitalHumanSelectedCopy } = useAppStore()
+
+    const clearLegalAuditTimer = (index: number) => {
+        const timer = legalAuditTimersRef.current[index]
+        if (timer) clearInterval(timer)
+        delete legalAuditTimersRef.current[index]
+    }
+
+    useEffect(() => {
+        return () => {
+            Object.keys(legalAuditTimersRef.current).forEach((key) => {
+                const idx = Number(key)
+                const timer = legalAuditTimersRef.current[idx]
+                if (timer) clearInterval(timer)
+            })
+            legalAuditTimersRef.current = {}
+        }
+    }, [])
 
     // 记录同步时间
     useEffect(() => {
@@ -128,6 +151,69 @@ function RewritePanel() {
         } finally {
             setLoadingIndex(null)
         }
+    }
+
+    const getAuditStatusTag = (status: LegalAuditReport['status']) => {
+        if (status === 'pass') return <Tag color="green">通过</Tag>
+        if (status === 'attention') return <Tag color="gold">建议优化</Tag>
+        return <Tag color="red">高风险</Tag>
+    }
+
+    const getLegalAuditPhaseText = (percent: number) => {
+        if (percent < 20) return '正在加载各平台规则库与广告法要点...'
+        if (percent < 45) return '正在扫描违禁词/敏感词/导流表达...'
+        if (percent < 70) return '正在核验绝对化用语、收益承诺、医疗功效等高风险点...'
+        if (percent < 90) return '正在结合常见限流触发点进行二次交叉检查...'
+        return '正在生成合规建议与替换方案...'
+    }
+
+    const startLegalAudit = (index: number) => {
+        const sourceText = String(rewrittenResults[index] || '').trim()
+        if (!sourceText) {
+            message.warning('请先生成原创文案，再进行一键法务检查')
+            return
+        }
+
+        const report = auditCopyText(sourceText)
+        setLegalAuditReports((prev) => ({ ...prev, [index]: report }))
+        setLegalAuditRunning((prev) => ({ ...prev, [index]: true }))
+        setLegalAuditProgress((prev) => ({ ...prev, [index]: 0 }))
+
+        clearLegalAuditTimer(index)
+        const startAt = Date.now()
+        const totalMs = 10000
+
+        legalAuditTimersRef.current[index] = setInterval(() => {
+            const elapsed = Date.now() - startAt
+            const percent = Math.min(99, Math.floor((elapsed / totalMs) * 100))
+            setLegalAuditProgress((prev) => ({ ...prev, [index]: percent }))
+
+            if (elapsed >= totalMs) {
+                clearLegalAuditTimer(index)
+                setLegalAuditProgress((prev) => ({ ...prev, [index]: 100 }))
+                setLegalAuditRunning((prev) => ({ ...prev, [index]: false }))
+
+                if (report.status === 'pass') message.success('AI法务：未发现明显违禁/限流风险词（仅供参考）')
+                else if (report.status === 'attention') message.warning('AI法务：发现可优化表达，建议发布前处理')
+                else message.error('AI法务：发现高风险表达，建议先修改再发布')
+            }
+        }, 120)
+    }
+
+    const applyLegalAuditSuggestion = (index: number) => {
+        const report = legalAuditReports[index]
+        const nextText = String(report?.suggestedText || '').trim()
+        if (!nextText) return
+
+        const title = String(copies[index]?.title || '逐字稿').trim() || '逐字稿'
+        setRewrittenResults((prev) => ({ ...prev, [index]: nextText }))
+        setRewrittenCopy(nextText)
+        setPreview('text', nextText)
+        setDigitalHumanSelectedCopy({ title, copy: nextText })
+        if (batchCopies.length > 0) {
+            updateBatchRewrittenCopy(index, title, nextText)
+        }
+        message.success('已应用法务建议文本')
     }
 
     if (copies.length === 0) {
@@ -338,6 +424,137 @@ function RewritePanel() {
                                                         <div style={{ fontSize: 16, lineHeight: 1.9, color: '#fff' }}>
                                                             {rewrittenResults[index]}
                                                         </div>
+                                                    </div>
+                                                )}
+
+                                                {/* 第四层：AI 法务检查 */}
+                                                {rewrittenResults[index] && (
+                                                    <div style={{
+                                                        marginTop: 16,
+                                                        background: 'linear-gradient(135deg, rgba(146,84,222,0.10), rgba(0,212,170,0.06))',
+                                                        border: '1px solid rgba(146,84,222,0.22)',
+                                                        borderRadius: 18,
+                                                        padding: 20,
+                                                    }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                                                            <div>
+                                                                <div style={{ fontSize: 16, fontWeight: 900, color: '#d3adf7' }}>🛡️ 一键AI法务检查</div>
+                                                                <div style={{ marginTop: 6, fontSize: 12, color: 'rgba(255,255,255,0.55)' }}>
+                                                                    扫描违禁词/敏感词、导流表达、绝对化用语、常见限流句式，输出替换建议。
+                                                                </div>
+                                                            </div>
+                                                            <Button
+                                                                type="primary"
+                                                                loading={!!legalAuditRunning[index]}
+                                                                onClick={() => startLegalAudit(index)}
+                                                                style={{
+                                                                    height: 44,
+                                                                    padding: '0 18px',
+                                                                    borderRadius: 12,
+                                                                    border: 'none',
+                                                                    fontWeight: 900,
+                                                                    background: 'linear-gradient(135deg, #9254de, #00d4aa)',
+                                                                }}
+                                                            >
+                                                                {legalAuditProgress[index] === 100 ? '重新检查' : '一键法务'}
+                                                            </Button>
+                                                        </div>
+
+                                                        {legalAuditRunning[index] ? (
+                                                            <div style={{ marginTop: 14 }}>
+                                                                <Progress
+                                                                    percent={legalAuditProgress[index] || 0}
+                                                                    status="active"
+                                                                    strokeColor={{ from: '#9254de', to: '#00d4aa' }}
+                                                                    trailColor="rgba(255,255,255,0.08)"
+                                                                />
+                                                                <div style={{ marginTop: 8, fontSize: 13, color: 'rgba(255,255,255,0.70)' }}>
+                                                                    {getLegalAuditPhaseText(legalAuditProgress[index] || 0)}
+                                                                </div>
+                                                                <div style={{ marginTop: 12, fontSize: 12, color: 'rgba(255,255,255,0.50)' }}>
+                                                                    <div style={{ fontWeight: 700, marginBottom: 8, color: 'rgba(255,255,255,0.72)' }}>检查依据（来源）：</div>
+                                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                                                        {LEGAL_AUDIT_BASIS.map((item) => (
+                                                                            <div key={item} style={{ display: 'flex', gap: 8, lineHeight: 1.6 }}>
+                                                                                <span style={{ color: '#d3adf7' }}>•</span>
+                                                                                <span>{item}</span>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        ) : legalAuditProgress[index] === 100 && legalAuditReports[index] ? (
+                                                            <div style={{ marginTop: 14 }}>
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                                                                    {getAuditStatusTag(legalAuditReports[index].status)}
+                                                                    <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.65)' }}>
+                                                                        风险分：<span style={{ color: '#fff', fontWeight: 800 }}>{legalAuditReports[index].score}</span>/100
+                                                                    </span>
+                                                                </div>
+                                                                <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.86)', lineHeight: 1.6 }}>
+                                                                    {legalAuditReports[index].summary}
+                                                                </div>
+
+                                                                {legalAuditReports[index].hits?.length > 0 && (
+                                                                    <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                                                        {legalAuditReports[index].hits.slice(0, 6).map((hit, i) => (
+                                                                            <div
+                                                                                key={`${hit.category}-${hit.term}-${i}`}
+                                                                                style={{
+                                                                                    background: 'rgba(255,255,255,0.03)',
+                                                                                    border: '1px solid rgba(255,255,255,0.08)',
+                                                                                    borderRadius: 14,
+                                                                                    padding: '12px 14px',
+                                                                                }}
+                                                                            >
+                                                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                                                                                    <div style={{ fontWeight: 800, color: 'rgba(255,255,255,0.88)' }}>{hit.category}</div>
+                                                                                    <Tag color={hit.severity === 'high' ? 'red' : hit.severity === 'medium' ? 'gold' : 'blue'}>
+                                                                                        {hit.severity.toUpperCase()}
+                                                                                    </Tag>
+                                                                                </div>
+                                                                                <div style={{ marginTop: 8, fontSize: 13, color: 'rgba(255,255,255,0.72)' }}>
+                                                                                    命中：<span style={{ color: '#fff', fontWeight: 800 }}>{hit.term}</span> × {hit.count}
+                                                                                </div>
+                                                                                <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(255,255,255,0.58)', lineHeight: 1.6 }}>
+                                                                                    建议：{hit.suggestion}
+                                                                                </div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+
+                                                                {String(legalAuditReports[index].suggestedText || '').trim() &&
+                                                                    String(legalAuditReports[index].suggestedText || '').trim() !== String(rewrittenResults[index] || '').trim() && (
+                                                                        <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+                                                                            <Button
+                                                                                onClick={() => {
+                                                                                    navigator.clipboard.writeText(String(legalAuditReports[index].suggestedText || ''))
+                                                                                    message.success('已复制合规建议文案')
+                                                                                }}
+                                                                            >
+                                                                                复制建议文本
+                                                                            </Button>
+                                                                            <Button
+                                                                                type="primary"
+                                                                                onClick={() => applyLegalAuditSuggestion(index)}
+                                                                                style={{
+                                                                                    borderRadius: 12,
+                                                                                    border: 'none',
+                                                                                    fontWeight: 900,
+                                                                                    background: 'linear-gradient(135deg, #9254de, #00d4aa)',
+                                                                                }}
+                                                                            >
+                                                                                一键应用建议
+                                                                            </Button>
+                                                                        </div>
+                                                                    )}
+                                                            </div>
+                                                        ) : (
+                                                            <div style={{ marginTop: 12, fontSize: 12, color: 'rgba(255,255,255,0.55)' }}>
+                                                                点击「一键法务」后，将以 10 秒进度条模拟完整合规核验，让你更放心再发布。
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 )}
                                             </div>

@@ -634,6 +634,34 @@ body {
   color: #00d4aa !important;
 }
 
+/* Segmented（用于 半自动/全自动 切换）*/
+.ant-segmented {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 14px !important;
+  padding: 4px !important;
+}
+
+.ant-segmented-item {
+  color: rgba(255, 255, 255, 0.7) !important;
+  font-weight: 800 !important;
+  border-radius: 12px !important;
+}
+
+.ant-segmented-item:hover {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+.ant-segmented-item-selected {
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.22), rgba(146, 84, 222, 0.14)) !important;
+  color: #ffffff !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35) !important;
+}
+
+.ant-segmented-thumb {
+  border-radius: 12px !important;
+}
+
 /* Message 消息提示暗色主题 */
 .ant-message-notice-content {
   background: #1a1d24 !important;

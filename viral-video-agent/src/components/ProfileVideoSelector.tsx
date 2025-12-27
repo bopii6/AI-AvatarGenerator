@@ -57,7 +57,7 @@ function ProfileVideoSelector({
         <Modal
             title={
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 32 }}>
-                    <span>选择要分析的视频（最多 {maxSelect} 个）</span>
+                    <span>选择要学习的样本视频（最多 {maxSelect} 个）</span>
                     <Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
                         已选 <Text strong style={{ color: 'var(--primary-color)' }}>{selectedVideos.length}</Text> / {maxSelect}
                     </Text>
@@ -69,7 +69,7 @@ function ProfileVideoSelector({
             footer={
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Text type="secondary">
-                        💡 选择多个视频可以分析成功共性，提取爆款密码
+                        💡 选择多个作品，AI 会学习对标博主的打法并生成原创选题
                     </Text>
                     <Space>
                         <Button onClick={handleCancel}>取消</Button>
@@ -78,7 +78,7 @@ function ProfileVideoSelector({
                             disabled={selectedVideos.length === 0}
                             onClick={handleConfirm}
                         >
-                            开始批量解析 ({selectedVideos.length} 个视频)
+                            开始学习（已选 {selectedVideos.length} 个）
                         </Button>
                     </Space>
                 </div>
