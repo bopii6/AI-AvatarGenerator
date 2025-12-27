@@ -6,7 +6,6 @@ import {
     SettingOutlined,
     CopyOutlined,
     RocketOutlined,
-    LockOutlined,
     DownOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from './store/appStore'
@@ -250,15 +249,6 @@ function App() {
     const sidebarKey = activeKey === 'audio' ? 'digitalHuman' : activeKey
 
     const activeIndex = Math.max(0, progressItems.findIndex((i) => i.key === sidebarKey))
-    const maxUnlockedIndex = (() => {
-        let idx = 0
-        for (let i = 1; i < progressItems.length; i += 1) {
-            if (progressItems[i - 1].done) idx = i
-            else break
-        }
-        return idx
-    })()
-
     const currentItemTitle = progressItems.find((i) => i.key === sidebarKey)?.title || '步骤'
     const showPreviewPanel = sidebarKey !== 'digitalHuman'
 
@@ -554,30 +544,24 @@ function App() {
                         <Typography.Text strong style={{ fontSize: 16, color: 'var(--accent)' }}>
                             当前第 {activeIndex + 1} 步 / 共 {progressItems.length} 步
                         </Typography.Text>
+                        <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.5, color: 'rgba(255,255,255,0.60)' }}>
+                            可随时点击任意步骤跳转；建议按上 → 下顺序完成。
+                        </div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                         {progressItems.map((item, idx) => {
-                            const locked = idx > maxUnlockedIndex && idx !== activeIndex
                             const connectorColor = item.done
                                 ? 'rgba(82,196,26,0.75)'
-                                : (activeIndex === idx ? 'rgba(0, 212, 170, 0.85)' : 'rgba(255,255,255,0.18)')
-                            const connectorDim = locked ? 'rgba(255,255,255,0.10)' : connectorColor
+                                : (activeIndex === idx ? 'rgba(0, 212, 170, 0.85)' : 'rgba(255,255,255,0.38)')
 
                             return (
                                 <div key={item.key}>
                                     <div
-                                        onClick={() => {
-                                            if (locked) {
-                                                const prev = progressItems[idx - 1]
-                                                message.warning(`请先完成上一步：${prev?.title || ''}`.trim())
-                                                return
-                                            }
-                                            handleTabChange(item.key)
-                                        }}
+                                        onClick={() => handleTabChange(item.key)}
                                         style={{
                                             padding: '16px 20px',
                                             borderRadius: 12,
-                                            cursor: locked ? 'not-allowed' : 'pointer',
+                                            cursor: 'pointer',
                                             background: activeIndex === idx
                                                 ? 'linear-gradient(135deg, rgba(0, 212, 170, 0.2), rgba(0, 184, 148, 0.1))'
                                                 : 'rgba(255, 255, 255, 0.03)',
@@ -585,7 +569,7 @@ function App() {
                                                 ? '2px solid var(--primary-color)'
                                                 : '1px solid rgba(255, 255, 255, 0.08)',
                                             transition: 'all 0.2s ease',
-                                            opacity: locked ? 0.45 : (item.done ? 1 : (activeIndex === idx ? 1 : 0.72)),
+                                            opacity: item.done ? 1 : (activeIndex === idx ? 1 : 0.78),
                                         }}
                                     >
                                         <div style={{
@@ -626,19 +610,7 @@ function App() {
                                         }}>
                                             {(item as any).subtitle || ''}
                                         </div>
-                                        {locked ? (
-                                            <div style={{
-                                                fontSize: 12,
-                                                color: 'rgba(255,255,255,0.55)',
-                                                marginTop: 6,
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: 6,
-                                            }}>
-                                                <LockOutlined />
-                                                请先完成上一步
-                                            </div>
-                                        ) : item.done ? (
+                                        {item.done ? (
                                             <div style={{
                                                 fontSize: 12,
                                                 color: '#52c41a',
@@ -651,14 +623,26 @@ function App() {
 
                                     {idx < progressItems.length - 1 && (
                                         <div style={{
-                                            height: 18,
+                                            height: 22,
                                             display: 'flex',
                                             alignItems: 'center',
                                             justifyContent: 'center',
-                                            color: connectorDim,
                                             userSelect: 'none',
                                         }}>
-                                            <DownOutlined />
+                                            <span style={{
+                                                width: 26,
+                                                height: 26,
+                                                borderRadius: 999,
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                background: 'rgba(255, 255, 255, 0.04)',
+                                                border: '1px solid rgba(255, 255, 255, 0.12)',
+                                                color: connectorColor,
+                                                boxShadow: '0 6px 18px rgba(0, 0, 0, 0.25)',
+                                            }}>
+                                                <DownOutlined style={{ fontSize: 14 }} />
+                                            </span>
                                         </div>
                                     )}
                                 </div>

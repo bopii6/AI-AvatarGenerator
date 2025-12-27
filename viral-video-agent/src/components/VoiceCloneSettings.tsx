@@ -46,6 +46,8 @@ function extFromMime(mimeType: string | undefined): string {
     return 'webm'
 }
 
+const MIN_RECORD_SECONDS = 30
+
 export default function VoiceCloneSettings() {
     const [models, setModels] = useState<VoiceModel[]>([])
     const [loadingModels, setLoadingModels] = useState(false)
@@ -70,8 +72,14 @@ export default function VoiceCloneSettings() {
     const recordedUrlRef = useRef<string>('')
 
     const canCreate = useMemo(() => {
-        return !!recordedBlob && !!voiceName.trim() && !recording && !creating
-    }, [creating, recording, recordedBlob, voiceName])
+        return (
+            !!recordedBlob &&
+            recordSeconds >= MIN_RECORD_SECONDS &&
+            !!voiceName.trim() &&
+            !recording &&
+            !creating
+        )
+    }, [creating, recording, recordedBlob, recordSeconds, voiceName])
 
     const cleanupRecording = () => {
         if (timerRef.current) {
@@ -220,6 +228,15 @@ export default function VoiceCloneSettings() {
             message.warning('请填写音色名称')
             return
         }
+        if (recordSeconds < MIN_RECORD_SECONDS) {
+            const remaining = Math.max(0, MIN_RECORD_SECONDS - recordSeconds)
+            message.warning(
+                remaining > 0
+                    ? `DashScope 要求录音至少 ${MIN_RECORD_SECONDS} 秒，请继续录制 ${remaining} 秒。`
+                    : `DashScope 要求录音至少 ${MIN_RECORD_SECONDS} 秒。`
+            )
+            return
+        }
 
         setCreating(true)
         setCreatingVoiceId('')
@@ -303,12 +320,18 @@ export default function VoiceCloneSettings() {
                             )}
 
                             {(recording || recordSeconds > 0) && (
-                                <Tag color={recording ? 'blue' : 'default'}>
+                                <Tag color={recording ? 'blue' : recordSeconds >= MIN_RECORD_SECONDS ? 'green' : 'orange'}>
                                     {recording ? '录音中' : '已录制'} {String(Math.floor(recordSeconds / 60)).padStart(2, '0')}:
                                     {String(recordSeconds % 60).padStart(2, '0')}
                                 </Tag>
                             )}
                         </Space>
+
+                        {recordedBlob && recordSeconds < MIN_RECORD_SECONDS && (
+                            <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                                录音至少 {MIN_RECORD_SECONDS} 秒，当前仅 {recordSeconds} 秒，请继续说话保持安静环境。
+                            </Typography.Text>
+                        )}
 
                         {recordedUrl && (
                             <div>

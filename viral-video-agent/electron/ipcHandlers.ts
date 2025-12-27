@@ -717,7 +717,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
 
             return { success: true, data: { voiceId } }
         } catch (error: any) {
-            return { success: false, error: error.message }
+            console.error('[cloud-voice-train] failed', error)
+            const errMsg =
+                error && typeof error === 'object' && 'message' in error
+                    ? String(error.message || '')
+                    : String(error || '')
+            if (errMsg.toLowerCase().includes('silent audio')) {
+                return {
+                    success: false,
+                    error: 'DashScope 检测到录音中没有有效人声或时长太短（至少 30 秒），请继续录制清晰语音后重试。',
+                }
+            }
+            return { success: false, error: errMsg || '未知错误' }
         }
     })
 

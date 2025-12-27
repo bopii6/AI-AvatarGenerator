@@ -51,7 +51,7 @@
   },
   "build": {
     "appId": "com.viral-video-agent.app",
-    "productName": "一键追爆",
+    "productName": "360行,AI智能体大脑",
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**"
     ],
