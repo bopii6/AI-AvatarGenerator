@@ -6,8 +6,11 @@
   "scripts": {
     "dev:clean": "node scripts/clean.js",
     "dev": "npm run dev:clean && npm run electron:dev",
-    "electron:dev": "cross-env NODE_ENV=development node scripts/build-electron.js && concurrently \"cross-env NODE_ENV=development vite --config vite.config.ts\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
+    "electron:dev": "cross-env NODE_ENV=development VITE_APP_MODE=electron node scripts/build-electron.js && concurrently \"cross-env NODE_ENV=development VITE_APP_MODE=electron vite --config vite.config.ts\" \"wait-on tcp:5173 && cross-env NODE_ENV=development electron .\"",
     "electron:build": "node scripts/build-electron.js && vite build --config vite.config.ts && electron-builder",
+    "web:dev": "node scripts/build-web-server.js && concurrently \"node dist-web-server/server.js\" \"cross-env VITE_APP_MODE=web vite --config vite.config.ts\"",
+    "web:build": "node scripts/build-web-server.js && vite build --config vite.config.ts",
+    "web:serve": "node dist-web-server/server.js",
     "postinstall": "node scripts/postinstall.js"
   },
   "keywords": [

@@ -427,8 +427,36 @@ export function registerIpcHandlers(mainWindow) {
     // ========== 系统配置 IPC ==========
     var getAliyunVoiceRuntime = function () {
         var runtime = readServerConfig();
-        var apiKey = (runtime.ALIYUN_DASHSCOPE_API_KEY || process.env.ALIYUN_DASHSCOPE_API_KEY || '').trim();
-        var model = (runtime.ALIYUN_COSYVOICE_MODEL || process.env.ALIYUN_COSYVOICE_MODEL || 'cosyvoice-v3-flash').trim();
+        var envApiKey = (process.env.ALIYUN_DASHSCOPE_API_KEY || '').trim();
+        var envModel = (process.env.ALIYUN_COSYVOICE_MODEL || '').trim();
+        var envFallbackModelsRaw = (process.env.ALIYUN_COSYVOICE_FALLBACK_MODELS || '').trim();
+        // 如果 .env 提供了新值，优先生效，并同步到本地持久化配置，避免 UI 仍显示旧值
+        var shouldSyncRuntime = false;
+        if (envApiKey && envApiKey !== (runtime.ALIYUN_DASHSCOPE_API_KEY || '').trim()) {
+            runtime = __assign(__assign({}, runtime), { ALIYUN_DASHSCOPE_API_KEY: envApiKey });
+            shouldSyncRuntime = true;
+        }
+        if (envModel && envModel !== (runtime.ALIYUN_COSYVOICE_MODEL || '').trim()) {
+            runtime = __assign(__assign({}, runtime), { ALIYUN_COSYVOICE_MODEL: envModel });
+            shouldSyncRuntime = true;
+        }
+        if (envFallbackModelsRaw && envFallbackModelsRaw !== (runtime.ALIYUN_COSYVOICE_FALLBACK_MODELS || '').trim()) {
+            runtime = __assign(__assign({}, runtime), { ALIYUN_COSYVOICE_FALLBACK_MODELS: envFallbackModelsRaw });
+            shouldSyncRuntime = true;
+        }
+        if (shouldSyncRuntime) {
+            try {
+                saveServerConfig(runtime);
+            }
+            catch (_a) {
+                // ignore
+            }
+        }
+        var apiKey = (runtime.ALIYUN_DASHSCOPE_API_KEY || envApiKey || '').trim();
+        var model = (runtime.ALIYUN_COSYVOICE_MODEL || envModel || 'cosyvoice-v3-flash').trim();
+        // 回退模型列表（逗号分隔）
+        var fallbackModelsRaw = (runtime.ALIYUN_COSYVOICE_FALLBACK_MODELS || envFallbackModelsRaw || '').trim();
+        var fallbackModels = fallbackModelsRaw ? fallbackModelsRaw.split(',').map(function (m) { return m.trim(); }).filter(Boolean) : [];
         var uploadServerUrl = (runtime.VOICE_AUDIO_UPLOAD_SERVER_URL || process.env.VOICE_AUDIO_UPLOAD_SERVER_URL || '').trim();
         var uploadPortRaw = (runtime.VOICE_AUDIO_UPLOAD_PORT || process.env.VOICE_AUDIO_UPLOAD_PORT || '').trim();
         var uploadPortParsed = parseInt(uploadPortRaw, 10);
@@ -442,6 +470,7 @@ export function registerIpcHandlers(mainWindow) {
         return {
             apiKey: apiKey,
             model: model,
+            fallbackModels: fallbackModels,
             uploadServerUrl: uploadServerUrl,
             uploadServerPort: uploadServerPort,
             cosBucket: cosBucket,
@@ -451,11 +480,11 @@ export function registerIpcHandlers(mainWindow) {
         };
     };
     ipcMain.handle('config-get', function () { return __awaiter(_this, void 0, void 0, function () {
-        var full, _a, apiKey, model, uploadServerUrl, uploadServerPort, cosBucket, cosRegion, cosPrefix, cosSignedUrlExpiresSeconds;
+        var full, _a, apiKey, model, fallbackModels, uploadServerUrl, uploadServerPort, cosBucket, cosRegion, cosPrefix, cosSignedUrlExpiresSeconds;
         var _b, _c;
         return __generator(this, function (_d) {
             full = getConfig();
-            _a = getAliyunVoiceRuntime(), apiKey = _a.apiKey, model = _a.model, uploadServerUrl = _a.uploadServerUrl, uploadServerPort = _a.uploadServerPort, cosBucket = _a.cosBucket, cosRegion = _a.cosRegion, cosPrefix = _a.cosPrefix, cosSignedUrlExpiresSeconds = _a.cosSignedUrlExpiresSeconds;
+            _a = getAliyunVoiceRuntime(), apiKey = _a.apiKey, model = _a.model, fallbackModels = _a.fallbackModels, uploadServerUrl = _a.uploadServerUrl, uploadServerPort = _a.uploadServerPort, cosBucket = _a.cosBucket, cosRegion = _a.cosRegion, cosPrefix = _a.cosPrefix, cosSignedUrlExpiresSeconds = _a.cosSignedUrlExpiresSeconds;
             // 过滤掉敏感 Key，只向前端暴露可配置的 IP 和非敏感项
             return [2 /*return*/, {
                     success: true,
@@ -464,6 +493,7 @@ export function registerIpcHandlers(mainWindow) {
                         CLOUD_GPU_VIDEO_PORT: ((_c = full.extra) === null || _c === void 0 ? void 0 : _c.cloudGpuVideoPort) || '8383',
                         ALIYUN_DASHSCOPE_API_KEY: apiKey,
                         ALIYUN_COSYVOICE_MODEL: model,
+                        ALIYUN_COSYVOICE_FALLBACK_MODELS: (fallbackModels || []).join(','),
                         VOICE_AUDIO_UPLOAD_SERVER_URL: uploadServerUrl,
                         VOICE_AUDIO_UPLOAD_PORT: uploadServerPort ? String(uploadServerPort) : '',
                         TENCENT_COS_BUCKET: cosBucket,
@@ -628,7 +658,7 @@ export function registerIpcHandlers(mainWindow) {
         });
     }); });
     ipcMain.handle('cloud-voice-train', function (_event, params) { return __awaiter(_this, void 0, void 0, function () {
-        var name_1, b64, tempDir, safeName, tempAudioPath, audioPathToUpload, _a, createVoice, createVoiceFromFile, uploadVoiceSampleToCos, _b, apiKey, model, uploadServerUrl, uploadServerPort, cosBucket, cosRegion, cosPrefix, cosSignedUrlExpiresSeconds, _c, serverUrl, videoPort, buffer, cosRes, voiceId_1, voiceId, error_3;
+        var name_1, b64, tempDir, safeName, tempAudioPath, audioPathToUpload, _a, createVoice, createVoiceFromFile, uploadVoiceSampleToCos, _b, apiKey, model, uploadServerUrl, uploadServerPort, cosBucket, cosRegion, cosPrefix, cosSignedUrlExpiresSeconds, requestedModel, effectiveModel, _c, serverUrl, videoPort, buffer, cosRes, voiceId_1, voiceId, error_3;
         return __generator(this, function (_d) {
             switch (_d.label) {
                 case 0:
@@ -659,6 +689,8 @@ export function registerIpcHandlers(mainWindow) {
                 case 2:
                     uploadVoiceSampleToCos = (_d.sent()).uploadVoiceSampleToCos;
                     _b = getAliyunVoiceRuntime(), apiKey = _b.apiKey, model = _b.model, uploadServerUrl = _b.uploadServerUrl, uploadServerPort = _b.uploadServerPort, cosBucket = _b.cosBucket, cosRegion = _b.cosRegion, cosPrefix = _b.cosPrefix, cosSignedUrlExpiresSeconds = _b.cosSignedUrlExpiresSeconds;
+                    requestedModel = ((params === null || params === void 0 ? void 0 : params.model) || '').trim();
+                    effectiveModel = requestedModel || model;
                     _c = getCloudGpuRuntime(), serverUrl = _c.serverUrl, videoPort = _c.videoPort;
                     if (!(cosBucket && cosRegion)) return [3 /*break*/, 5];
                     buffer = fs.readFileSync(audioPathToUpload);
@@ -672,13 +704,13 @@ export function registerIpcHandlers(mainWindow) {
                         }, { buffer: buffer, fileName: safeName, deviceId: deviceId })];
                 case 3:
                     cosRes = _d.sent();
-                    return [4 /*yield*/, createVoice({ apiKey: apiKey, model: model }, { name: name_1, audioUrl: cosRes.signedUrl })];
+                    return [4 /*yield*/, createVoice({ apiKey: apiKey, model: effectiveModel }, { name: name_1, audioUrl: cosRes.signedUrl })];
                 case 4:
                     voiceId_1 = (_d.sent()).voiceId;
                     return [2 /*return*/, { success: true, data: { voiceId: voiceId_1 } }];
                 case 5: return [4 /*yield*/, createVoiceFromFile({
                         apiKey: apiKey,
-                        model: model,
+                        model: effectiveModel,
                         audioUploadServerUrl: uploadServerUrl || serverUrl,
                         audioUploadServerPort: uploadServerPort || videoPort,
                     }, { name: name_1, audioPath: audioPathToUpload })];
@@ -1493,6 +1525,47 @@ export function registerIpcHandlers(mainWindow) {
                 case 2:
                     error_26 = _a.sent();
                     return [2 /*return*/, { success: false, error: error_26.message }];
+                case 3: return [2 /*return*/];
+            }
+        });
+    }); });
+    // ========== 保存文件到“社区作品库”（用于直播展示）==========
+    ipcMain.handle('save-to-community', function (_event, params) { return __awaiter(_this, void 0, void 0, function () {
+        var fs_2, sourcePath, communityDir, rawTitle, safeTitle, baseName, ext, destPath, error_27;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    _a.trys.push([0, 2, , 3]);
+                    return [4 /*yield*/, import('fs')];
+                case 1:
+                    fs_2 = _a.sent();
+                    sourcePath = String(((params === null || params === void 0 ? void 0 : params.sourcePath) || '')).trim();
+                    if (!sourcePath) {
+                        throw new Error('sourcePath 为空');
+                    }
+                    if (!fs_2.existsSync(sourcePath)) {
+                        throw new Error('文件不存在: ' + sourcePath);
+                    }
+                    communityDir = path.join(config.outputDir, 'community');
+                    if (!fs_2.existsSync(communityDir))
+                        fs_2.mkdirSync(communityDir, { recursive: true });
+                    rawTitle = String(((params === null || params === void 0 ? void 0 : params.title) || '')).trim();
+                    safeTitle = rawTitle
+                        .replace(/[\\\\/:*?"<>|]+/g, '_')
+                        .replace(/\\s+/g, ' ')
+                        .trim()
+                        .slice(0, 60);
+                    baseName = safeTitle || 'digital_human';
+                    ext = path.extname(sourcePath) || '.mp4';
+                    destPath = path.join(communityDir, "".concat(baseName).concat(ext));
+                    if (fs_2.existsSync(destPath)) {
+                        destPath = path.join(communityDir, "".concat(baseName, "_").concat(Date.now()).concat(ext));
+                    }
+                    fs_2.copyFileSync(sourcePath, destPath);
+                    return [2 /*return*/, { success: true, data: { destPath: destPath } }];
+                case 2:
+                    error_27 = _a.sent();
+                    return [2 /*return*/, { success: false, error: error_27.message }];
                 case 3: return [2 /*return*/];
             }
         });

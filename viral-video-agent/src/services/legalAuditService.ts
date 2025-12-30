@@ -57,7 +57,63 @@ type RegexRule = RuleBase & {
 
 type Rule = TermsRule | RegexRule
 
-const RULES: Rule[] = [
+const ABSOLUTE_AD_WORD_REPLACEMENTS: Record<string, string> = {
+    '全网最好': '更受欢迎',
+    '全网最': '更受欢迎',
+    '史上最': '相当',
+    '第一': '更有优势',
+    '唯一': '比较少见',
+    '顶级': '高品质',
+    '国家级': '更专业的',
+    '世界级': '更高水平的',
+    '最好': '更合适',
+    '最强': '更强',
+    '最佳': '更优',
+    '最便宜': '更划算',
+    '绝对': '更',
+    '永久': '长期',
+    '永远': '长期',
+    '百分百': '更高比例',
+    '100%': '更高比例',
+    '零风险': '风险更可控',
+    '零门槛': '门槛更低',
+    '万能': '多场景适用',
+}
+
+function getAbsoluteAdWordReplacement(term: string) {
+    return ABSOLUTE_AD_WORD_REPLACEMENTS[term] || '更'
+}
+
+const MONEY_PROMISE_REPLACEMENTS: Record<string, string> = {
+    '稳赚不赔': '风险更可控（仍需评估）',
+    '保证赚钱': '更有机会（不保证收益）',
+    '稳赚': '更有机会',
+    '必赚': '更有机会',
+    '躺赚': '更轻松一些',
+    '暴富': '提升收入',
+    '翻倍': '提升',
+    '日入': '每天增加',
+    '月入': '每月增加',
+    '年入': '每年增加',
+}
+
+function getMoneyPromiseReplacement(term: string) {
+    return MONEY_PROMISE_REPLACEMENTS[term] || '更有机会'
+}
+
+function withAutoReplacements(rules: Rule[]): Rule[] {
+    return rules.map((rule) => {
+        if (rule.id === 'absolute_ad_words' && rule.type === 'terms' && !rule.replacement) {
+            return { ...rule, replacement: (term: string) => getAbsoluteAdWordReplacement(term) }
+        }
+        if (rule.id === 'money_promises' && rule.type === 'terms' && !rule.replacement) {
+            return { ...rule, replacement: (term: string) => getMoneyPromiseReplacement(term) }
+        }
+        return rule
+    })
+}
+
+const RULES: Rule[] = withAutoReplacements([
     {
         id: 'private_traffic_keywords',
         type: 'regex',
@@ -192,7 +248,7 @@ const RULES: Rule[] = [
             '加群',
         ],
     },
-]
+])
 
 function escapeRegExp(input: string) {
     return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

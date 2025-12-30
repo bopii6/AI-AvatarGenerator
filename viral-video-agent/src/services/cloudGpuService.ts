@@ -17,6 +17,37 @@ import path from 'path'
 import FormData from 'form-data'
 import { replaceAudioTrack } from './ffmpegService'
 
+class CloudGpuCancelledError extends Error {
+    constructor(message: string = '已取消') {
+        super(message)
+        this.name = 'CloudGpuCancelledError'
+    }
+}
+
+function isAbortLikeError(err: any): boolean {
+    const msg = String(err?.message || '').toLowerCase()
+    return err?.name === 'AbortError' || err?.name === 'CloudGpuCancelledError' || msg.includes('aborted') || msg.includes('cancel')
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+    if (signal?.aborted) throw new CloudGpuCancelledError()
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(new CloudGpuCancelledError())
+        const onAbort = () => {
+            clearTimeout(timer)
+            reject(new CloudGpuCancelledError())
+        }
+        const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort)
+            resolve()
+        }, ms)
+        signal?.addEventListener('abort', onAbort, { once: true })
+    })
+}
+
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = (() => {
     const raw = (process.env.CLOUD_GPU_DOWNLOAD_TIMEOUT_MS || '').trim()
     const parsed = raw && /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN
@@ -83,8 +114,9 @@ const defaultConfig: CloudGpuConfig = {
 /**
  * HTTP POST JSON 请求
  */
-async function postJSON(url: string, data: object, timeout = 30000, retryCount = 0): Promise<any> {
+async function postJSON(url: string, data: object, timeout = 30000, retryCount = 0, signal?: AbortSignal): Promise<any> {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(new CloudGpuCancelledError())
         const urlObj = new URL(url)
         const protocol = urlObj.protocol === 'https:' ? https : http
 
@@ -105,7 +137,8 @@ async function postJSON(url: string, data: object, timeout = 30000, retryCount =
                 if (res.statusCode === 503 && retryCount < 12) {
                     console.log(`[cloudGpuService] Service switching, retry in 10s... (${retryCount + 1}/12)`)
                     setTimeout(() => {
-                        postJSON(url, data, timeout, retryCount + 1).then(resolve).catch(reject)
+                        if (signal?.aborted) return reject(new CloudGpuCancelledError())
+                        postJSON(url, data, timeout, retryCount + 1, signal).then(resolve).catch(reject)
                     }, 10000)
                     return
                 }
@@ -118,11 +151,20 @@ async function postJSON(url: string, data: object, timeout = 30000, retryCount =
             })
         })
 
+        const onAbort = () => {
+            try { req.destroy(new CloudGpuCancelledError()) } catch { /* ignore */ }
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+
         req.on('timeout', () => {
             req.destroy()
             reject(new Error('请求超时'))
         })
-        req.on('error', reject)
+        req.on('error', (err) => {
+            signal?.removeEventListener('abort', onAbort)
+            if (isAbortLikeError(err)) reject(new CloudGpuCancelledError())
+            else reject(err)
+        })
         req.write(postData)
         req.end()
     })
@@ -131,8 +173,9 @@ async function postJSON(url: string, data: object, timeout = 30000, retryCount =
 /**
  * HTTP GET 请求
  */
-async function getJSON(url: string, timeout = 30000, retryCount = 0): Promise<any> {
+async function getJSON(url: string, timeout = 30000, retryCount = 0, signal?: AbortSignal): Promise<any> {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(new CloudGpuCancelledError())
         const urlObj = new URL(url)
         const protocol = urlObj.protocol === 'https:' ? https : http
 
@@ -144,7 +187,8 @@ async function getJSON(url: string, timeout = 30000, retryCount = 0): Promise<an
                 if (res.statusCode === 503 && retryCount < 12) {
                     console.log(`[cloudGpuService] Service switching, retry in 10s... (${retryCount + 1}/12)`)
                     setTimeout(() => {
-                        getJSON(url, timeout, retryCount + 1).then(resolve).catch(reject)
+                        if (signal?.aborted) return reject(new CloudGpuCancelledError())
+                        getJSON(url, timeout, retryCount + 1, signal).then(resolve).catch(reject)
                     }, 10000)
                     return
                 }
@@ -157,11 +201,20 @@ async function getJSON(url: string, timeout = 30000, retryCount = 0): Promise<an
             })
         })
 
+        const onAbort = () => {
+            try { req.destroy(new CloudGpuCancelledError()) } catch { /* ignore */ }
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+
         req.on('timeout', () => {
             req.destroy()
             reject(new Error('请求超时'))
         })
-        req.on('error', reject)
+        req.on('error', (err) => {
+            signal?.removeEventListener('abort', onAbort)
+            if (isAbortLikeError(err)) reject(new CloudGpuCancelledError())
+            else reject(err)
+        })
     })
 }
 
@@ -174,9 +227,11 @@ async function uploadFile(
     fieldName: string = 'file',
     onProgress?: (percent: number) => void,
     remoteFileName?: string,
-    retryCount: number = 0
+    retryCount: number = 0,
+    signal?: AbortSignal
 ): Promise<any> {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(new CloudGpuCancelledError())
         const fileSize = fs.statSync(filePath).size
         const fileName = remoteFileName || path.basename(filePath)
 
@@ -216,7 +271,8 @@ async function uploadFile(
                 if (statusCode === 503 && retryCount < 12) {
                     console.log(`[cloudGpuService] Service switching (upload), retry in 10s... (${retryCount + 1}/12)`)
                     setTimeout(() => {
-                        uploadFile(url, filePath, fieldName, onProgress, remoteFileName, retryCount + 1).then(safeResolve).catch(safeReject)
+                        if (signal?.aborted) return safeReject(new CloudGpuCancelledError())
+                        uploadFile(url, filePath, fieldName, onProgress, remoteFileName, retryCount + 1, signal).then(safeResolve).catch(safeReject)
                     }, 10000)
                     return
                 }
@@ -238,7 +294,16 @@ async function uploadFile(
             req.destroy()
             safeReject(new Error('请求超时'))
         })
-        req.on('error', (err) => safeReject(err as Error))
+        const onAbort = () => {
+            try { req.destroy(new CloudGpuCancelledError()) } catch { /* ignore */ }
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+
+        req.on('error', (err) => {
+            signal?.removeEventListener('abort', onAbort)
+            if (isAbortLikeError(err)) safeReject(new CloudGpuCancelledError())
+            else safeReject(err as Error)
+        })
 
         // 写入 header
         req.write(header)
@@ -246,10 +311,20 @@ async function uploadFile(
         // 流式写入文件
         const fileStream = fs.createReadStream(filePath)
         let uploaded = 0
+        let lastPercent = -1
 
         fileStream.on('data', (chunk) => {
+            if (signal?.aborted) {
+                try { fileStream.destroy(new CloudGpuCancelledError()) } catch { /* ignore */ }
+                try { req.destroy(new CloudGpuCancelledError()) } catch { /* ignore */ }
+                return
+            }
             uploaded += Buffer.isBuffer(chunk) ? chunk.length : chunk.length
-            onProgress?.(Math.round(uploaded / fileSize * 100))
+            const pct = Math.round(uploaded / fileSize * 100)
+            if (pct !== lastPercent) {
+                lastPercent = pct
+                onProgress?.(pct)
+            }
         })
 
         fileStream.on('end', () => {
@@ -258,7 +333,8 @@ async function uploadFile(
         })
         fileStream.on('error', (err) => {
             req.destroy()
-            safeReject(err as Error)
+            if (isAbortLikeError(err)) safeReject(new CloudGpuCancelledError())
+            else safeReject(err as Error)
         })
 
         fileStream.pipe(req, { end: false })
@@ -272,24 +348,27 @@ async function downloadFile(
     url: string,
     outputPath: string,
     onProgress?: (percent: number) => void,
-    timeoutMs: number = DEFAULT_DOWNLOAD_TIMEOUT_MS
+    timeoutMs: number = DEFAULT_DOWNLOAD_TIMEOUT_MS,
+    signal?: AbortSignal
 ): Promise<void> {
     const maxRetries = 6
     const baseDelayMs = 1500
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            await downloadFileOnceWithResume(url, outputPath, onProgress, timeoutMs)
+            throwIfAborted(signal)
+            await downloadFileOnceWithResume(url, outputPath, onProgress, timeoutMs, signal)
             return
         } catch (e: any) {
+            if (e?.name === 'CloudGpuCancelledError') throw e
             const msg = e?.message || String(e)
             // 404 往往表示文件尚未落盘/尚未对外可下载；不在这里做长时间重试，让上层继续轮询再试
             if (String(msg).includes('HTTP 404')) throw e
             const isLast = attempt === maxRetries
             console.warn(`[CloudGPU] 下载失败，准备重试 (${attempt}/${maxRetries}):`, msg)
             if (isLast) throw e
-            const delay = Math.min(baseDelayMs * attempt, 8000)
-            await new Promise((r) => setTimeout(r, delay))
+            const backoffMs = Math.min(baseDelayMs * attempt, 8000)
+            await delay(backoffMs, signal)
         }
     }
 }
@@ -298,9 +377,11 @@ async function downloadFileOnceWithResume(
     url: string,
     outputPath: string,
     onProgress?: (percent: number) => void,
-    timeoutMs: number = DEFAULT_DOWNLOAD_TIMEOUT_MS
+    timeoutMs: number = DEFAULT_DOWNLOAD_TIMEOUT_MS,
+    signal?: AbortSignal
 ): Promise<void> {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(new CloudGpuCancelledError())
         const protocol = url.startsWith('https') ? https : http
         let settled = false
 
@@ -326,7 +407,7 @@ async function downloadFileOnceWithResume(
                 const redirectUrl = response.headers.location
                 response.resume()
                 if (redirectUrl) {
-                    downloadFileOnceWithResume(redirectUrl, outputPath, onProgress, timeoutMs).then(safeResolve).catch(safeReject)
+                    downloadFileOnceWithResume(redirectUrl, outputPath, onProgress, timeoutMs, signal).then(safeResolve).catch(safeReject)
                 } else {
                     safeReject(new Error('重定向缺少 Location'))
                 }
@@ -346,7 +427,7 @@ async function downloadFileOnceWithResume(
             if (existingBytes > 0 && !isPartial) {
                 response.resume()
                 try { fs.unlinkSync(outputPath) } catch { /* ignore */ }
-                downloadFileOnceWithResume(url, outputPath, onProgress, timeoutMs).then(safeResolve).catch(safeReject)
+                downloadFileOnceWithResume(url, outputPath, onProgress, timeoutMs, signal).then(safeResolve).catch(safeReject)
                 return
             }
 
@@ -361,6 +442,7 @@ async function downloadFileOnceWithResume(
 
             let downloaded = existingBytes
             const file = fs.createWriteStream(outputPath, { flags: existingBytes > 0 ? 'a' : 'w' })
+            let lastPercent = -1
 
             file.on('error', (err) => {
                 try { response.destroy() } catch { /* ignore */ }
@@ -370,8 +452,19 @@ async function downloadFileOnceWithResume(
             response.on('error', (err) => safeReject(err))
 
             response.on('data', (chunk: Buffer | string) => {
+                if (signal?.aborted) {
+                    try { response.destroy(new CloudGpuCancelledError()) } catch { /* ignore */ }
+                    try { file.destroy(new CloudGpuCancelledError()) } catch { /* ignore */ }
+                    return
+                }
                 downloaded += typeof chunk === 'string' ? chunk.length : chunk.length
-                if (totalSize > 0) onProgress?.(Math.max(0, Math.min(100, Math.round(downloaded / totalSize * 100))))
+                if (totalSize > 0) {
+                    const pct = Math.max(0, Math.min(100, Math.round(downloaded / totalSize * 100)))
+                    if (pct !== lastPercent) {
+                        lastPercent = pct
+                        onProgress?.(pct)
+                    }
+                }
             })
 
             response.pipe(file)
@@ -380,10 +473,19 @@ async function downloadFileOnceWithResume(
             })
         })
 
+        const onAbort = () => {
+            try { req.destroy(new CloudGpuCancelledError()) } catch { /* ignore */ }
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+
         req.setTimeout(timeoutMs, () => {
             try { req.destroy(new Error('下载超时')) } catch { /* ignore */ }
         })
-        req.on('error', (err) => safeReject(err))
+        req.on('error', (err) => {
+            signal?.removeEventListener('abort', onAbort)
+            if (isAbortLikeError(err)) safeReject(new CloudGpuCancelledError())
+            else safeReject(err)
+        })
     })
 }
 
@@ -415,6 +517,10 @@ function buildDownloadPathCandidates(serverPath: string): string[] {
     candidates.push(raw)
     candidates.push(noQuery)
 
+    // 从路径中提取 taskCode（UUID v4 形态），用于兼容不同服务端的产物命名
+    const uuidMatch = noQuery.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+    const taskCode = uuidMatch ? uuidMatch[0] : ''
+
     // 去掉前缀后的相对路径
     if (noQuery.startsWith('/code/data/')) candidates.push(noQuery.slice('/code/data/'.length))
     if (noQuery.startsWith('code/data/')) candidates.push(noQuery.slice('code/data/'.length))
@@ -422,6 +528,7 @@ function buildDownloadPathCandidates(serverPath: string): string[] {
 
     const base = posixBasename(noQuery)
     const baseLooksLikeFile = /\.[a-z0-9]+$/i.test(base)
+    const baseLower = base.toLowerCase()
 
     // 常见：Duix 返回 "/<uuid>-r.mp4"，但文件实际在 "/code/data/temp/<uuid>-r.mp4"
     if (baseLooksLikeFile) {
@@ -429,6 +536,19 @@ function buildDownloadPathCandidates(serverPath: string): string[] {
         candidates.push(`/temp/${base}`)
         candidates.push(`/code/data/temp/${base}`)
         candidates.push(`/code/data/${base}`)
+    }
+
+    // 兼容：/code/data/temp/{taskCode}/result.avi（或 result.mp4）但实际可下载的是 "/{taskCode}-r.mp4"
+    if (taskCode && /\/code\/data\/temp\/[^/]+\//i.test(noQuery) && baseLower.startsWith('result.')) {
+        candidates.push(`/${taskCode}-r.mp4`)
+        candidates.push(`${taskCode}-r.mp4`)
+        candidates.push(`/code/data/temp/${taskCode}-r.mp4`)
+        candidates.push(`temp/${taskCode}-r.mp4`)
+        // 有些环境会把容器内产物转成 mp4
+        if (baseLower === 'result.avi') {
+            candidates.push(noQuery.replace(/result\.avi$/i, 'result.mp4'))
+            candidates.push(noQuery.replace(/result\.avi$/i, `${taskCode}-r.mp4`))
+        }
     }
 
     // 如果返回的是 "/xxx.mp4" 这种根路径，也尝试映射到 /code/data/temp
@@ -506,7 +626,8 @@ async function downloadFromDuixFileApi(
     cfg: CloudGpuConfig,
     serverPath: string,
     outputPath: string,
-    onProgress?: (percent: number) => void
+    onProgress?: (percent: number) => void,
+    signal?: AbortSignal
 ): Promise<void> {
     const candidates = buildDownloadPathCandidates(serverPath)
     console.log(`[downloadFromDuixFileApi] 原始路径: ${serverPath}`)
@@ -521,7 +642,9 @@ async function downloadFromDuixFileApi(
             await downloadFile(
                 downloadUrl,
                 outputPath,
-                onProgress
+                onProgress,
+                DEFAULT_DOWNLOAD_TIMEOUT_MS,
+                signal
             )
             console.log(`[downloadFromDuixFileApi] ✅ 下载成功: ${p}`)
             return
@@ -701,7 +824,8 @@ export async function generateCloudVideo(
     config: Partial<CloudGpuConfig>,
     model: CloudAvatarModel,
     audioPath: string,
-    onProgress?: (progress: number, message: string) => void
+    onProgress?: (progress: number, message: string) => void,
+    signal?: AbortSignal
 ): Promise<string> {
     const cfg = { ...defaultConfig, ...config }
 
@@ -712,6 +836,7 @@ export async function generateCloudVideo(
 
     const taskCode = await getUuidV4()
 
+    throwIfAborted(signal)
     onProgress?.(5, '正在上传音频到服务器...')
 
     // 尝试上传音频
@@ -726,7 +851,9 @@ export async function generateCloudVideo(
             (percent) => {
                 onProgress?.(5 + percent * 0.1, `上传音频 ${percent}%`)
             },
-            remoteAudioFileName
+            remoteAudioFileName,
+            0,
+            signal
         )
         remoteAudioPath = uploadResult?.path || uploadResult?.audio_path || `/code/data/${remoteAudioFileName}`
     } catch (error: any) {
@@ -744,7 +871,7 @@ export async function generateCloudVideo(
         chaofen: 0,           // 超分辨率，0 关闭
         watermark_switch: 0,  // 水印，0 关闭
         pn: 1,                // 固定值
-    })
+    }, 30000, 0, signal)
 
     // 检查提交结果
     if (submitResult.code !== undefined && submitResult.code !== 0 && submitResult.code !== 200 && submitResult.code !== 10000) {
@@ -758,13 +885,16 @@ export async function generateCloudVideo(
     const pollInterval = 5000  // 5 秒轮询一次
 
     for (let i = 0; i < maxAttempts; i++) {
-        await new Promise(resolve => setTimeout(resolve, pollInterval))
+        await delay(pollInterval, signal)
+        throwIfAborted(signal)
 
         let queryResult: any
         try {
             queryResult = await getJSON(
                 `${cfg.serverUrl}:${cfg.videoPort}/easy/query?code=${taskCode}`,
-                DEFAULT_QUERY_TIMEOUT_MS
+                DEFAULT_QUERY_TIMEOUT_MS,
+                0,
+                signal
             )
         } catch (error: any) {
             // 网络错误，继续轮询
@@ -797,7 +927,7 @@ export async function generateCloudVideo(
                 if (videoUrl.startsWith('http')) {
                     await downloadFile(videoUrl, outputPath, (percent) => {
                         onProgress?.(90 + percent * 0.1, `下载视频 ${percent}%`)
-                    })
+                    }, DEFAULT_DOWNLOAD_TIMEOUT_MS, signal)
                 } else {
                     // 服务器返回的是服务器上的本地路径
                     // 需要通过下载接口获取
@@ -810,16 +940,17 @@ export async function generateCloudVideo(
                         try {
                             await downloadFromDuixFileApi(cfg, videoUrl, outputPath, (percent) => {
                                 onProgress?.(90 + percent * 0.1, `下载视频 ${percent}%`)
-                            })
+                            }, signal)
                             downloadSuccess = true
                             break
                         } catch (e: any) {
                             lastDownloadError = e
                             const msg = String(e?.message || e)
+                            if (e?.name === 'CloudGpuCancelledError') throw e
                             // 404 表示文件尚未落盘，等待后重试
                             if (msg.includes('HTTP 404') || msg.includes('file not found') || msg.includes('Download failed')) {
                                 onProgress?.(90, `等待服务端写文件... (${downloadAttempt + 1}/${maxDownloadRetries})`)
-                                await new Promise(r => setTimeout(r, 5000))
+                                await delay(5000, signal)
                                 continue
                             }
                             // 其他错误，抛出
@@ -831,7 +962,7 @@ export async function generateCloudVideo(
                         // 尝试直接路径下载
                         try {
                             const directPath = videoUrl.startsWith('/') ? videoUrl : `/${videoUrl}`
-                            await downloadFile(`${cfg.serverUrl}:${cfg.videoPort}${directPath}`, outputPath)
+                            await downloadFile(`${cfg.serverUrl}:${cfg.videoPort}${directPath}`, outputPath, undefined, DEFAULT_DOWNLOAD_TIMEOUT_MS, signal)
                             onProgress?.(100, '完成')
                             return outputPath
                         } catch {
@@ -895,7 +1026,8 @@ export async function generateCloudVideoWithLocalPaths(
     config: Partial<CloudGpuConfig>,
     avatarVideoPath: string,
     audioPath: string,
-    onProgress?: (progress: number, message: string) => void
+    onProgress?: (progress: number, message: string) => void,
+    signal?: AbortSignal
 ): Promise<string> {
     const cfg = { ...defaultConfig, ...config }
 
@@ -907,7 +1039,7 @@ export async function generateCloudVideoWithLocalPaths(
         createdAt: new Date(),
     }
 
-    return generateCloudVideo(cfg, tempModel, audioPath, onProgress)
+    return generateCloudVideo(cfg, tempModel, audioPath, onProgress, signal)
 }
 
 /**
@@ -920,7 +1052,8 @@ export async function synthesizeCloudVideoOnly(
     config: Partial<CloudGpuConfig>,
     avatarVideoPath: string,
     audioPath: string,
-    onProgress?: (progress: number, message: string) => void
+    onProgress?: (progress: number, message: string) => void,
+    signal?: AbortSignal
 ): Promise<{ taskCode: string; remoteVideoPath: string }> {
     const cfg = { ...defaultConfig, ...config }
 
@@ -931,6 +1064,7 @@ export async function synthesizeCloudVideoOnly(
 
     const taskCode = await getUuidV4()
 
+    throwIfAborted(signal)
     onProgress?.(5, '正在上传音频到服务器...')
 
     // 尝试上传音频
@@ -945,7 +1079,9 @@ export async function synthesizeCloudVideoOnly(
             (percent) => {
                 onProgress?.(5 + percent * 0.15, `上传音频 ${percent}%`)
             },
-            remoteAudioFileName
+            remoteAudioFileName,
+            0,
+            signal
         )
         remoteAudioPath = uploadResult?.path || uploadResult?.audio_path || `/code/data/${remoteAudioFileName}`
     } catch (error: any) {
@@ -962,7 +1098,7 @@ export async function synthesizeCloudVideoOnly(
         chaofen: 0,
         watermark_switch: 0,
         pn: 1,
-    })
+    }, 30000, 0, signal)
 
     if (submitResult.code !== undefined && submitResult.code !== 0 && submitResult.code !== 200 && submitResult.code !== 10000) {
         throw new Error(submitResult.msg || submitResult.message || '提交任务失败')
@@ -975,13 +1111,16 @@ export async function synthesizeCloudVideoOnly(
     const pollInterval = 5000
 
     for (let i = 0; i < maxAttempts; i++) {
-        await new Promise(resolve => setTimeout(resolve, pollInterval))
+        await delay(pollInterval, signal)
+        throwIfAborted(signal)
 
         let queryResult: any
         try {
             queryResult = await getJSON(
                 `${cfg.serverUrl}:${cfg.videoPort}/easy/query?code=${taskCode}`,
-                DEFAULT_QUERY_TIMEOUT_MS
+                DEFAULT_QUERY_TIMEOUT_MS,
+                0,
+                signal
             )
         } catch (error: any) {
             console.warn('查询进度失败，继续等待...', error.message)
@@ -1034,12 +1173,41 @@ export async function downloadCloudVideoToLocal(
     config: Partial<CloudGpuConfig>,
     remoteVideoPath: string,
     localAudioPathForMux?: string,
-    onProgress?: (progress: number, message: string) => void
+    onProgress?: (progress: number, message: string) => void,
+    signal?: AbortSignal
 ): Promise<string> {
     const cfg = { ...defaultConfig, ...config }
 
-    console.log(`[downloadCloudVideoToLocal] 开始下载, 远程路径: ${remoteVideoPath}`)
-    onProgress?.(0, '准备下载...')
+    let remotePath = remoteVideoPath
+
+    // 兼容：某些服务端在 query 返回的 result 与 SDK/客户端缓存的路径不一致（例如 result.avi vs {taskCode}-r.mp4）
+    // 如遇到这类路径，先尝试通过 /easy/query 反查真实可下载的 result，再进入下载重试循环。
+    try {
+        const m = String(remotePath || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+        const taskCode = m ? m[0] : ''
+        const normalized = String(remotePath || '').replace(/\\/g, '/')
+        const looksLikeDirectArtifact = /(^|\/)[0-9a-f-]{36}-r\.[a-z0-9]{2,6}$/i.test(normalized)
+        const looksLikeResultInFolder = /\/code\/data\/temp\/[0-9a-f-]{36}\/result\.[a-z0-9]{2,6}$/i.test(normalized)
+
+        if (cfg.serverUrl && taskCode && (looksLikeResultInFolder || (!looksLikeDirectArtifact && normalized.includes(taskCode)))) {
+            const queryResult = await getJSON(
+                `${cfg.serverUrl}:${cfg.videoPort}/easy/query?code=${taskCode}`,
+                DEFAULT_QUERY_TIMEOUT_MS,
+                0,
+                signal
+            )
+            const parsed = parseDuixQueryResult(taskCode, queryResult)
+            if (parsed?.resultUrl && looksLikeFilePath(parsed.resultUrl)) {
+                console.log(`[downloadCloudVideoToLocal] 反查 resultUrl 成功: ${parsed.resultUrl} (from ${remotePath})`)
+                remotePath = String(parsed.resultUrl)
+            }
+        }
+    } catch (e: any) {
+        console.warn('[downloadCloudVideoToLocal] 反查下载路径失败，继续使用原始路径:', e?.message || e)
+    }
+
+    console.log(`[downloadCloudVideoToLocal] 开始下载(云端->本地), 远程路径: ${remotePath}`)
+    onProgress?.(0, '准备下载（云端->本地）...')
 
     const outputDir = path.join(cfg.localDataPath, 'generated_videos')
     if (!fs.existsSync(outputDir)) {
@@ -1047,7 +1215,7 @@ export async function downloadCloudVideoToLocal(
     }
 
     const outputPath = path.join(outputDir, `digital_human_${Date.now()}.mp4`)
-    console.log(`[downloadCloudVideoToLocal] 本地输出路径: ${outputPath}`)
+    console.log(`[downloadCloudVideoToLocal] 本地目标路径(下载中，文件可能会先出现但未完成): ${outputPath}`)
 
     // 直接在下载阶段内重试
     const maxDownloadRetries = 12
@@ -1057,16 +1225,17 @@ export async function downloadCloudVideoToLocal(
 
     for (let downloadAttempt = 0; downloadAttempt < maxDownloadRetries; downloadAttempt++) {
         console.log(`[downloadCloudVideoToLocal] 下载尝试 ${downloadAttempt + 1}/${maxDownloadRetries}`)
-        onProgress?.(0, `正在下载... (尝试 ${downloadAttempt + 1}/${maxDownloadRetries})`)
+        onProgress?.(0, `正在下载（云端->本地）... (尝试 ${downloadAttempt + 1}/${maxDownloadRetries})`)
         try {
-            await downloadFromDuixFileApi(cfg, remoteVideoPath, outputPath, (percent) => {
+            throwIfAborted(signal)
+            await downloadFromDuixFileApi(cfg, remotePath, outputPath, (percent) => {
                 // 只在进度变化时输出日志
                 if (percent !== lastLoggedPercent) {
                     console.log(`[downloadCloudVideoToLocal] 下载进度: ${percent}%`)
                     lastLoggedPercent = percent
                 }
-                onProgress?.(percent, `下载视频 ${percent}%`)
-            })
+                onProgress?.(percent, `下载视频（云端->本地） ${percent}%`)
+            }, signal)
             downloadSuccess = true
             console.log(`[downloadCloudVideoToLocal] ✅ 下载成功!`)
             break
@@ -1074,9 +1243,10 @@ export async function downloadCloudVideoToLocal(
             lastDownloadError = e
             const msg = String(e?.message || e)
             console.log(`[downloadCloudVideoToLocal] ❌ 下载失败: ${msg}`)
+            if (e?.name === 'CloudGpuCancelledError') throw e
             if (msg.includes('HTTP 404') || msg.includes('file not found') || msg.includes('Download failed')) {
                 onProgress?.(0, `等待服务端写文件... (${downloadAttempt + 1}/${maxDownloadRetries})`)
-                await new Promise(r => setTimeout(r, 5000))
+                await delay(5000, signal)
                 continue
             }
             throw e
@@ -1086,13 +1256,13 @@ export async function downloadCloudVideoToLocal(
     if (!downloadSuccess) {
         // 尝试直接路径下载
         try {
-            const directPath = remoteVideoPath.startsWith('/') ? remoteVideoPath : `/${remoteVideoPath}`
-            await downloadFile(`${cfg.serverUrl}:${cfg.videoPort}${directPath}`, outputPath)
+            const directPath = remotePath.startsWith('/') ? remotePath : `/${remotePath}`
+            await downloadFile(`${cfg.serverUrl}:${cfg.videoPort}${directPath}`, outputPath, undefined, DEFAULT_DOWNLOAD_TIMEOUT_MS, signal)
         } catch {
-            if (fs.existsSync(remoteVideoPath)) {
-                fs.copyFileSync(remoteVideoPath, outputPath)
+            if (fs.existsSync(remotePath)) {
+                fs.copyFileSync(remotePath, outputPath)
             } else {
-                throw lastDownloadError || new Error(`无法下载视频。服务器路径: ${remoteVideoPath}`)
+                throw lastDownloadError || new Error(`无法下载视频。服务器路径: ${remotePath}`)
             }
         }
     }

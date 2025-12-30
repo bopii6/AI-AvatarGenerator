@@ -1,5 +1,6 @@
 // 加载环境变量（尽量在最开头）
 import dotenv from 'dotenv'
+import { app, BrowserWindow } from 'electron'
 import fs from 'fs'
 import path from 'path'
 
@@ -73,7 +74,6 @@ appendNoProxyHost('localhost')
 appendNoProxyHost('127.0.0.1')
 appendNoProxyHost(process.env.CLOUD_GPU_SERVER_URL)
 
-import { app, BrowserWindow, ipcMain } from 'electron'
 import { registerIpcHandlers } from './ipcHandlers'
 import { checkForUpdatesAndNotify } from '../src/services/updateService'
 

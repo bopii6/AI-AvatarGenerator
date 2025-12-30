@@ -37,28 +37,57 @@ const defaultSubtitleStyle: SubtitleStyle = {
 /**
  * 执行 FFmpeg 命令
  */
-function runFFmpeg(args: string[]): Promise<void> {
+function runFFmpeg(args: string[], options?: { timeoutMs?: number }): Promise<void> {
     return new Promise((resolve, reject) => {
         console.log(`[FFmpeg] 使用路径: ${ffmpegPath}`)
         console.log(`[FFmpeg] 参数: ${args.join(' ')}`)
-        const ffmpeg = spawn(ffmpegPath, args, { stdio: 'pipe' })
+        const ffmpeg = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
 
-        let stderr = ''
-        ffmpeg.stderr.on('data', (data) => {
-            stderr += data.toString()
+        const timeoutMs = options?.timeoutMs ?? 10 * 60 * 1000
+        let settled = false
+        const safeResolve = () => {
+            if (settled) return
+            settled = true
+            resolve()
+        }
+        const safeReject = (err: any) => {
+            if (settled) return
+            settled = true
+            reject(err)
+        }
+        let timer: NodeJS.Timeout | null = null
+        if (timeoutMs > 0) {
+            timer = setTimeout(() => {
+                const err = new Error(`FFmpeg timeout after ${timeoutMs}ms`)
+                safeReject(err)
+                try { ffmpeg.kill() } catch { /* ignore */ }
+            }, timeoutMs)
+        }
+
+        // Drain stdout/stderr to avoid pipe backpressure hanging long-running ffmpeg processes.
+        ffmpeg.stdout?.on('data', () => { /* ignore */ })
+
+        let stderrTail = ''
+        ffmpeg.stderr?.on('data', (data) => {
+            stderrTail += data.toString()
+            if (stderrTail.length > 8000) stderrTail = stderrTail.slice(-8000)
         })
 
         ffmpeg.on('close', (code) => {
+            if (timer) clearTimeout(timer)
             if (code === 0) {
-                resolve()
+                safeResolve()
             } else {
                 // Keep error payload small to avoid noisy IPC/console output
-                const trimmed = stderr.length > 4000 ? stderr.slice(-4000) : stderr
-                reject(new Error(`FFmpeg failed with code ${code}: ${trimmed}`))
+                const trimmed = stderrTail.length > 4000 ? stderrTail.slice(-4000) : stderrTail
+                safeReject(new Error(`FFmpeg failed with code ${code}: ${trimmed}`))
             }
         })
 
-        ffmpeg.on('error', reject)
+        ffmpeg.on('error', (err) => {
+            if (timer) clearTimeout(timer)
+            safeReject(err)
+        })
     })
 }
 

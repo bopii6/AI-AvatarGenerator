@@ -58,7 +58,7 @@ export default function ServerSettings() {
                     TENCENT_COS_VOICE_PREFIX: 'voice-samples/',
                     TENCENT_COS_SIGNED_URL_EXPIRES_SECONDS: '3600',
                     ALIYUN_COSYVOICE_MODEL: 'cosyvoice-v3-flash',
-                    ALIYUN_COSYVOICE_FALLBACK_MODELS: 'cosyvoice-clone-v1,cosyvoice-v3-plus',
+                    ALIYUN_COSYVOICE_FALLBACK_MODELS: 'cosyvoice-v3-flash',
                 }}
             >
                 <Card
@@ -193,7 +193,7 @@ export default function ServerSettings() {
                             style={{ flex: 1, minWidth: 320 }}
                             extra="逗号分隔，按优先级排序，可添加新模型名称"
                         >
-                            <Input placeholder="cosyvoice-clone-v1,cosyvoice-v3-plus" />
+                            <Input placeholder="cosyvoice-v3-flash" />
                         </Form.Item>
                     </Space>
                 </Card>

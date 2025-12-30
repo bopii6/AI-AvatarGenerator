@@ -1,6 +1,6 @@
-/**
- * Electron IPC 处理器
- * 连接主进程服务和渲染进程
+﻿/**
+ * Electron IPC 澶勭悊鍣?
+ * 杩炴帴涓昏繘绋嬫湇鍔″拰娓叉煋杩涚▼
  */
 
 import { ipcMain, app, BrowserWindow, dialog, shell, safeStorage } from 'electron'
@@ -31,6 +31,7 @@ import { generateCover, CoverServiceConfig } from '../src/services/coverService'
 import { runPipeline, PipelineConfig } from '../src/services/pipelineService'
 import { spawn, spawnSync } from 'child_process'
 import http from 'http'
+import https from 'https'
 import fs from 'fs'
 import FormData from 'form-data'
 import { createHash, randomBytes, randomUUID } from 'crypto'
@@ -75,6 +76,11 @@ function convertAudioToWavIfNeeded(sourcePath: string): string {
 function convertAudioToDuixWavPcm16k(sourcePath: string, tempDir: string): string {
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true })
     const outputPath = path.join(tempDir, `duix_audio_${Date.now()}_${uuidv4()}.wav`)
+    return outputPath
+}
+
+async function convertAudioToDuixWavPcm16kAsync(sourcePath: string, tempDir: string, signal?: AbortSignal): Promise<string> {
+    const outputPath = convertAudioToDuixWavPcm16k(sourcePath, tempDir)
     const args = [
         '-y',
         '-i', sourcePath,
@@ -83,13 +89,32 @@ function convertAudioToDuixWavPcm16k(sourcePath: string, tempDir: string): strin
         '-c:a', 'pcm_s16le',
         outputPath,
     ]
-    const result = spawnSync(ffmpegExecutable, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
+
+    await new Promise<void>((resolve, reject) => {
+        const proc = spawn(ffmpegExecutable, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+        let stderr = ''
+        proc.stderr.on('data', (d) => { stderr += d.toString('utf8') })
+
+        const fail = (e: any) => {
+            try { proc.kill() } catch { /* ignore */ }
+            reject(e)
+        }
+
+        const onAbort = () => fail(new Error('已取消'))
+        if (signal?.aborted) return onAbort()
+        signal?.addEventListener('abort', onAbort, { once: true })
+
+        proc.on('error', (e) => {
+            signal?.removeEventListener('abort', onAbort)
+            reject(e)
+        })
+        proc.on('close', (code) => {
+            signal?.removeEventListener('abort', onAbort)
+            if (code === 0) resolve()
+            else reject(new Error(`音频转码失败：${stderr.trim().slice(-4000)}`))
+        })
     })
-    if (result.status !== 0) {
-        const err = (result.stderr || result.stdout || '').toString('utf8')
-        throw new Error(`音频转码失败：${err.trim()}`)
-    }
+
     return outputPath
 }
 
@@ -100,7 +125,7 @@ function splitTextForTts(input: string, maxChunkChars: number): string[] {
 
     const rawParts = text
         .replace(/\r\n/g, '\n')
-        .split(/(?<=[。！？!?；;，,])|\n+/)
+        .split(/(?<=[銆傦紒锛??锛?锛?])|\n+/)
         .map(s => s.trim())
         .filter(Boolean)
 
@@ -165,7 +190,7 @@ function concatAudio(inputs: string[], outputPath: string): void {
 
 type PublishPlatformKey = 'douyin' | 'xiaohongshu' | 'shipinhao' | 'kuaishou'
 const PUBLISH_PLATFORM_TYPE: Record<PublishPlatformKey, number> = {
-    // 1 小红书 2 视频号 3 抖音 4 快手
+    // 1 灏忕孩涔?2 瑙嗛鍙?3 鎶栭煶 4 蹇墜
     xiaohongshu: 1,
     shipinhao: 2,
     douyin: 3,
@@ -237,6 +262,52 @@ function getPublishLogPath() {
     return path.join(app.getPath('userData'), 'logs', 'publish.log')
 }
 
+function getAuditLogPath() {
+    return path.join(app.getPath('userData'), 'logs', 'audit.jsonl')
+}
+
+function appendJsonl(filePath: string, record: any) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`, 'utf8')
+}
+
+async function postJson(endpoint: string, payload: any, timeoutMs: number = 10_000): Promise<void> {
+    const url = new URL(endpoint)
+    const body = Buffer.from(JSON.stringify(payload), 'utf8')
+    const client = url.protocol === 'https:' ? https : http
+
+    await new Promise<void>((resolve, reject) => {
+        const req = client.request(
+            {
+                hostname: url.hostname,
+                port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
+                path: `${url.pathname}${url.search}`,
+                method: 'POST',
+                timeout: timeoutMs,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': body.length,
+                },
+            },
+            (res) => {
+                res.on('data', () => { /* ignore */ })
+                res.on('end', () => {
+                    const status = Number(res.statusCode || 0)
+                    if (status >= 200 && status < 300) resolve()
+                    else reject(new Error(`HTTP ${status}`))
+                })
+            }
+        )
+
+        req.on('error', reject)
+        req.on('timeout', () => {
+            try { req.destroy(new Error('timeout')) } catch { /* ignore */ }
+        })
+        req.write(body)
+        req.end()
+    })
+}
+
 function logPublish(message: string, extra?: Record<string, any>) {
     try {
         const payload = {
@@ -252,7 +323,7 @@ function logPublish(message: string, extra?: Record<string, any>) {
             0
         )
 
-        // 同时输出到终端（不包含 Cookie 内容）
+        // 鍚屾椂杈撳嚭鍒扮粓绔紙涓嶅寘鍚?Cookie 鍐呭锛?
         try {
             // eslint-disable-next-line no-console
             console.log(`[publish] ${payload.ts} ${payload.message}${payload.extra ? ` ${JSON.stringify(payload.extra)}` : ''}`)
@@ -275,7 +346,7 @@ function platformDefaultCookieDomain(platform: PublishPlatformKey): string {
         case 'xiaohongshu':
             return '.xiaohongshu.com'
         case 'shipinhao':
-            // 视频号常见域名：channels.weixin.qq.com / weixin.qq.com
+            // 瑙嗛鍙峰父瑙佸煙鍚嶏細channels.weixin.qq.com / weixin.qq.com
             return 'channels.weixin.qq.com'
         default:
             return ''
@@ -322,14 +393,14 @@ function parseCookieHeaderStringToCookieEditorJson(
 
 function normalizeCookieInput(platform: PublishPlatformKey, input: string): { normalizedJson: string; format: 'json' | 'cookie-header'; cookieCount?: number } {
     const raw = (input || '').trim()
-    if (!raw) throw new Error('请输入 Cookie（JSON 或 Cookie 字符串）')
+    if (!raw) throw new Error('璇疯緭鍏?Cookie锛圝SON 鎴?Cookie 瀛楃涓诧級')
 
     try {
         const parsed = JSON.parse(raw)
-        // 允许 array/object，保存为格式化后的 JSON，避免用户粘贴压缩内容难以排查
+        // 鍏佽 array/object锛屼繚瀛樹负鏍煎紡鍖栧悗鐨?JSON锛岄伩鍏嶇敤鎴风矘璐村帇缂╁唴瀹归毦浠ユ帓鏌?
         return { normalizedJson: JSON.stringify(parsed, null, 2), format: 'json' }
     } catch {
-        // 兼容用户粘贴 Request Headers 的 cookie 字符串：a=b; c=d
+        // 鍏煎鐢ㄦ埛绮樿创 Request Headers 鐨?cookie 瀛楃涓诧細a=b; c=d
         const converted = parseCookieHeaderStringToCookieEditorJson(platform, raw)
         return { normalizedJson: converted.json, format: 'cookie-header', cookieCount: converted.cookieCount }
     }
@@ -338,7 +409,7 @@ function normalizeCookieInput(platform: PublishPlatformKey, input: string): { no
 function safeErrorMessage(error: any): string {
     const msg = (error && typeof error === 'object' && 'message' in error) ? String((error as any).message || '') : String(error || '')
     const stack = (error && typeof error === 'object' && 'stack' in error) ? String((error as any).stack || '') : ''
-    return (msg || stack || '未知错误').toString()
+    return (msg || stack || '鏈煡閿欒').toString()
 }
 
 function stripAnsi(input: string): string {
@@ -368,12 +439,12 @@ function getOrCreateDeviceId() {
     return id
 }
 
-// ========== 配置管理 (动态加载与持久化) ==========
+// ========== 閰嶇疆绠＄悊 (鍔ㄦ€佸姞杞戒笌鎸佷箙鍖? ==========
 function getServerConfigPath() {
     return path.join(app.getPath('userData'), 'server_config.json')
 }
 
-// 默认配置（如果本地文件不存在，且环境变量也未注入时的保底方案）
+// 榛樿閰嶇疆锛堝鏋滄湰鍦版枃浠朵笉瀛樺湪锛屼笖鐜鍙橀噺涔熸湭娉ㄥ叆鏃剁殑淇濆簳鏂规锛?
 function getBuiltInConfig(): Partial<PipelineConfig> {
     return {
         tencent: {
@@ -384,12 +455,12 @@ function getBuiltInConfig(): Partial<PipelineConfig> {
             accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || '',
             accessKeySecret: process.env.ALIYUN_ACCESS_KEY_SECRET || '',
         },
-        // 注意：这些 URL 会被本地存储覆盖
+        // 娉ㄦ剰锛氳繖浜?URL 浼氳鏈湴瀛樺偍瑕嗙洊
         digitalHuman: {
             apiUrl: process.env.CLOUD_GPU_SERVER_URL ? `${process.env.CLOUD_GPU_SERVER_URL}:${process.env.CLOUD_GPU_VIDEO_PORT || 8383}` : 'http://localhost:8080',
         },
         coverProvider: (process.env.COVER_PROVIDER === 'tencent' ? 'tencent' : 'aliyun') as 'aliyun' | 'tencent',
-        // 传递其他全局变量
+        // 浼犻€掑叾浠栧叏灞€鍙橀噺
         extra: {
             cloudGpuServerUrl: process.env.CLOUD_GPU_SERVER_URL || '',
             cloudGpuVideoPort: process.env.CLOUD_GPU_VIDEO_PORT || '8383',
@@ -418,8 +489,8 @@ function getConfig(): PipelineConfig {
     const builtIn = getBuiltInConfig() as PipelineConfig
     let runtime = readServerConfig()
 
-    // 如果 .env 提供了云端 GPU 地址/端口，则优先生效，并同步覆盖到本地持久化配置，
-    // 避免用户曾在「设置」里保存过旧 IP，导致界面仍显示旧 endpoint。
+    // 濡傛灉 .env 鎻愪緵浜嗕簯绔?GPU 鍦板潃/绔彛锛屽垯浼樺厛鐢熸晥锛屽苟鍚屾瑕嗙洊鍒版湰鍦版寔涔呭寲閰嶇疆锛?
+    // 閬垮厤鐢ㄦ埛鏇惧湪銆岃缃€嶉噷淇濆瓨杩囨棫 IP锛屽鑷寸晫闈粛鏄剧ず鏃?endpoint銆?
     const envCloudGpuUrl = (process.env.CLOUD_GPU_SERVER_URL || '').trim()
     const envCloudGpuPort = (process.env.CLOUD_GPU_VIDEO_PORT || '').trim()
     let shouldSyncRuntime = false
@@ -439,32 +510,79 @@ function getConfig(): PipelineConfig {
         }
     }
 
-    // 合并运行时覆盖 (主要是 IP 和端口)
+    // 鍚堝苟杩愯鏃惰鐩?(涓昏鏄?IP 鍜岀鍙?
     const cloudGpuUrl = envCloudGpuUrl || (runtime.CLOUD_GPU_SERVER_URL || '').trim() || ''
     const cloudGpuPort = envCloudGpuPort || (runtime.CLOUD_GPU_VIDEO_PORT || '').trim() || '8383'
 
-    // 如果有设置 IP，则构造完整的 API URL
+    // 濡傛灉鏈夎缃?IP锛屽垯鏋勯€犲畬鏁寸殑 API URL
     if (cloudGpuUrl) {
         builtIn.digitalHuman.apiUrl = cloudGpuUrl.startsWith('http') ? `${cloudGpuUrl}:${cloudGpuPort}` : `http://${cloudGpuUrl}:${cloudGpuPort}`
     }
 
-    // 注入额外的配置项供后续组件使用
+    // 娉ㄥ叆棰濆鐨勯厤缃」渚涘悗缁粍浠朵娇鐢?
     if (!builtIn.extra) builtIn.extra = {}
     builtIn.extra.cloudGpuServerUrl = cloudGpuUrl
     builtIn.extra.cloudGpuVideoPort = cloudGpuPort
 
-    // 输出目录始终位于用户数据文件夹下
+    // 杈撳嚭鐩綍濮嬬粓浣嶄簬鐢ㄦ埛鏁版嵁鏂囦欢澶逛笅
     builtIn.outputDir = path.join(app.getPath('userData'), 'output')
 
     return builtIn
 }
 
 /**
- * 注册所有 IPC 处理器
+ * 娉ㄥ唽鎵€鏈?IPC 澶勭悊鍣?
  */
 export function registerIpcHandlers(mainWindow: BrowserWindow) {
     let config = getConfig()
     const deviceId = getOrCreateDeviceId()
+
+    const safeSend = (target: Electron.WebContents | null | undefined, channel: string, payload: any) => {
+        try {
+            if (!target || target.isDestroyed()) return
+            target.send(channel, payload)
+        } catch {
+            // ignore
+        }
+    }
+
+    const cloudGpuControllers = new Map<number, { synth?: AbortController; download?: AbortController; generate?: AbortController }>()
+    const getCloudGpuEntry = (senderId: number) => {
+        const existing = cloudGpuControllers.get(senderId)
+        if (existing) return existing
+        const created = { synth: undefined, download: undefined, generate: undefined }
+        cloudGpuControllers.set(senderId, created)
+        return created
+    }
+
+    const abortCloudGpu = (senderId: number, kind: 'synth' | 'download' | 'generate') => {
+        const entry = getCloudGpuEntry(senderId)
+        const ctrl = entry[kind]
+        if (ctrl) {
+            try { ctrl.abort() } catch { /* ignore */ }
+        }
+        entry[kind] = undefined
+    }
+
+    const createThrottledProgressSender = (sender: Electron.WebContents, channel: string) => {
+        let lastProgress = -1
+        let lastMessage = ''
+        let lastAt = 0
+        return (progress: number, message: string) => {
+            const p = Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : 0
+            const msg = String(message || '')
+            const now = Date.now()
+            const changed = p !== lastProgress || msg !== lastMessage
+            if (!changed) return
+            if (p !== 100 && now - lastAt < 120) return
+            lastProgress = p
+            lastMessage = msg
+            lastAt = now
+            const payload = { progress: p, message: msg }
+            safeSend(sender, channel, payload)
+            if (mainWindow.webContents.id !== sender.id) safeSend(mainWindow.webContents, channel, payload)
+        }
+    }
 
     const normalizeHttpUrl = (raw: string): string => {
         const trimmed = (raw || '').trim().replace(/\/+$/, '')
@@ -484,7 +602,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     }
 
-    // ========== 更新检查 IPC ==========
+    // ========== 鏇存柊妫€鏌?IPC ==========
     ipcMain.handle('check-for-updates', async () => {
         try {
             const { manualCheckForUpdates } = await import('../src/services/updateService')
@@ -496,13 +614,40 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 系统配置 IPC ==========
+    // ========== 绯荤粺閰嶇疆 IPC ==========
     const getAliyunVoiceRuntime = () => {
-        const runtime = readServerConfig()
-        const apiKey = (runtime.ALIYUN_DASHSCOPE_API_KEY || process.env.ALIYUN_DASHSCOPE_API_KEY || '').trim()
-        const model = (runtime.ALIYUN_COSYVOICE_MODEL || process.env.ALIYUN_COSYVOICE_MODEL || 'cosyvoice-v3-flash').trim()
+        let runtime = readServerConfig()
+
+        const envApiKey = (process.env.ALIYUN_DASHSCOPE_API_KEY || '').trim()
+        const envModel = (process.env.ALIYUN_COSYVOICE_MODEL || '').trim()
+        const envFallbackModelsRaw = (process.env.ALIYUN_COSYVOICE_FALLBACK_MODELS || '').trim()
+
+        // 如果 .env 提供了新值，优先生效，并同步到本地持久化配置，避免 UI 仍显示旧值
+        let shouldSyncRuntime = false
+        if (envApiKey && envApiKey !== (runtime.ALIYUN_DASHSCOPE_API_KEY || '').trim()) {
+            runtime = { ...runtime, ALIYUN_DASHSCOPE_API_KEY: envApiKey }
+            shouldSyncRuntime = true
+        }
+        if (envModel && envModel !== (runtime.ALIYUN_COSYVOICE_MODEL || '').trim()) {
+            runtime = { ...runtime, ALIYUN_COSYVOICE_MODEL: envModel }
+            shouldSyncRuntime = true
+        }
+        if (envFallbackModelsRaw && envFallbackModelsRaw !== (runtime.ALIYUN_COSYVOICE_FALLBACK_MODELS || '').trim()) {
+            runtime = { ...runtime, ALIYUN_COSYVOICE_FALLBACK_MODELS: envFallbackModelsRaw }
+            shouldSyncRuntime = true
+        }
+        if (shouldSyncRuntime) {
+            try {
+                saveServerConfig(runtime)
+            } catch {
+                // ignore
+            }
+        }
+
+        const apiKey = (runtime.ALIYUN_DASHSCOPE_API_KEY || envApiKey || '').trim()
+        const model = (runtime.ALIYUN_COSYVOICE_MODEL || envModel || 'cosyvoice-v3-flash').trim()
         // 回退模型列表（逗号分隔）
-        const fallbackModelsRaw = (runtime.ALIYUN_COSYVOICE_FALLBACK_MODELS || process.env.ALIYUN_COSYVOICE_FALLBACK_MODELS || '').trim()
+        const fallbackModelsRaw = (runtime.ALIYUN_COSYVOICE_FALLBACK_MODELS || envFallbackModelsRaw || '').trim()
         const fallbackModels = fallbackModelsRaw ? fallbackModelsRaw.split(',').map(m => m.trim()).filter(Boolean) : []
         const uploadServerUrl = (runtime.VOICE_AUDIO_UPLOAD_SERVER_URL || process.env.VOICE_AUDIO_UPLOAD_SERVER_URL || '').trim()
         const uploadPortRaw = (runtime.VOICE_AUDIO_UPLOAD_PORT || process.env.VOICE_AUDIO_UPLOAD_PORT || '').trim()
@@ -530,8 +675,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
 
     ipcMain.handle('config-get', async () => {
         const full = getConfig()
-        const { apiKey, model, uploadServerUrl, uploadServerPort, cosBucket, cosRegion, cosPrefix, cosSignedUrlExpiresSeconds } = getAliyunVoiceRuntime()
-        // 过滤掉敏感 Key，只向前端暴露可配置的 IP 和非敏感项
+        const { apiKey, model, fallbackModels, uploadServerUrl, uploadServerPort, cosBucket, cosRegion, cosPrefix, cosSignedUrlExpiresSeconds } = getAliyunVoiceRuntime()
+        // 杩囨护鎺夋晱鎰?Key锛屽彧鍚戝墠绔毚闇插彲閰嶇疆鐨?IP 鍜岄潪鏁忔劅椤?
         return {
             success: true,
             data: {
@@ -539,6 +684,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 CLOUD_GPU_VIDEO_PORT: full.extra?.cloudGpuVideoPort || '8383',
                 ALIYUN_DASHSCOPE_API_KEY: apiKey,
                 ALIYUN_COSYVOICE_MODEL: model,
+                ALIYUN_COSYVOICE_FALLBACK_MODELS: fallbackModels.join(','),
                 VOICE_AUDIO_UPLOAD_SERVER_URL: uploadServerUrl,
                 VOICE_AUDIO_UPLOAD_PORT: uploadServerPort ? String(uploadServerPort) : '',
                 TENCENT_COS_BUCKET: cosBucket,
@@ -558,7 +704,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             const next = { ...current, ...updates }
             saveServerConfig(next)
 
-            // 热更新内存中的配置对象
+            // 鐑洿鏂板唴瀛樹腑鐨勯厤缃璞?
             config = getConfig()
 
             return { success: true }
@@ -567,7 +713,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 全网分发（Cookie 管理）==========
+    // ========== 合规审计日志 ==========
+    ipcMain.handle('audit-log', async (_event, record: any) => {
+        try {
+            const safeRecord = record && typeof record === 'object' ? record : { record }
+            if (!safeRecord.ts) safeRecord.ts = new Date().toISOString()
+
+            const filePath = getAuditLogPath()
+            appendJsonl(filePath, safeRecord)
+
+            const endpoint = (process.env.AUDIT_LOG_ENDPOINT || '').trim()
+            if (endpoint) {
+                await postJson(endpoint, {
+                    ...safeRecord,
+                    appVersion: app.getVersion(),
+                })
+            }
+
+            return { success: true }
+        } catch (error: any) {
+            return { success: false, error: safeErrorMessage(error) }
+        }
+    })
+
+    // ========== 鍏ㄧ綉鍒嗗彂锛圕ookie 绠＄悊锛?=========
     ipcMain.handle('publish-cookie-list', async () => {
         try {
             logPublish('publish-cookie-list:start')
@@ -590,7 +759,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             logPublish('publish-cookie-save:start', { platform, userName })
 
             if (!platform || !(platform in PUBLISH_PLATFORM_TYPE)) {
-                throw new Error('请选择平台')
+                throw new Error('璇烽€夋嫨骞冲彴')
             }
             if (!userName) {
                 throw new Error('请输入账号名称')
@@ -621,7 +790,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             const userName = (params?.userName || '').trim()
             logPublish('publish-cookie-delete:start', { platform, userName })
             if (!platform || !(platform in PUBLISH_PLATFORM_TYPE) || !userName) {
-                throw new Error('参数错误')
+                throw new Error('鍙傛暟閿欒')
             }
             const entries = readPublishCookieStore()
             const next = entries.filter(e => !(e.platform === platform && e.userName === userName))
@@ -634,12 +803,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 诊断接口 ==========
+    // ========== 璇婃柇鎺ュ彛 ==========
     ipcMain.handle('env-get-loaded-path', async () => {
         return {
             success: true,
             data: {
-                loadedPath: process.env.VIRAL_VIDEO_AGENT_ENV_PATH_LOADED || '未加载任何 .env 文件',
+                loadedPath: process.env.VIRAL_VIDEO_AGENT_ENV_PATH_LOADED || '鏈姞杞戒换浣?.env 鏂囦欢',
                 cwd: process.cwd(),
                 execPath: process.execPath,
                 appPath: app.getAppPath()
@@ -676,7 +845,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    ipcMain.handle('cloud-voice-train', async (_event, params: { name: string; audioBufferBase64: string; fileName?: string }) => {
+    ipcMain.handle('cloud-voice-train', async (_event, params: { name: string; model?: string; audioBufferBase64: string; fileName?: string }) => {
         try {
             const name = (params?.name || '').trim()
             if (!name) throw new Error('请填写声音名称')
@@ -699,7 +868,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
 
             const { createVoice, createVoiceFromFile } = await import('../src/services/aliyunVoiceService')
             const { uploadVoiceSampleToCos } = await import('../src/services/tencentCosService')
-            const { apiKey, model, uploadServerUrl, uploadServerPort, cosBucket, cosRegion, cosPrefix, cosSignedUrlExpiresSeconds } = getAliyunVoiceRuntime()
+            const { apiKey, model, fallbackModels, uploadServerUrl, uploadServerPort, cosBucket, cosRegion, cosPrefix, cosSignedUrlExpiresSeconds } = getAliyunVoiceRuntime()
+            const requestedModel = (params?.model || '').trim()
+            const effectiveModel = requestedModel || model
             const { serverUrl, videoPort } = getCloudGpuRuntime()
 
             if (cosBucket && cosRegion) {
@@ -713,13 +884,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                     signedUrlExpiresSeconds: cosSignedUrlExpiresSeconds ?? 3600,
                 }, { buffer, fileName: safeName, deviceId })
 
-                const { voiceId } = await createVoice({ apiKey, model }, { name, audioUrl: cosRes.signedUrl })
+                const { voiceId } = await createVoice({ apiKey, model: effectiveModel }, { name, audioUrl: cosRes.signedUrl })
                 return { success: true, data: { voiceId } }
             }
 
             const { voiceId } = await createVoiceFromFile({
                 apiKey,
-                model,
+                model: effectiveModel,
                 audioUploadServerUrl: uploadServerUrl || serverUrl,
                 audioUploadServerPort: uploadServerPort || videoPort,
             }, { name, audioPath: audioPathToUpload })
@@ -755,9 +926,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     ipcMain.handle('cloud-voice-tts', async (_event, params: { voiceId: string; text: string }) => {
         try {
             const text = (params?.text || '').trim()
-            if (!text) throw new Error('文本为空')
+            if (!text) throw new Error('鏂囨湰涓虹┖')
             const voiceId = (params?.voiceId || '').trim()
-            if (!voiceId) throw new Error('voiceId 为空')
+            if (!voiceId) throw new Error('voiceId 涓虹┖')
 
             const { synthesizeSpeech, getVoice } = await import('../src/services/aliyunVoiceService')
             const { apiKey, model, fallbackModels } = getAliyunVoiceRuntime()
@@ -768,7 +939,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                     throw new Error('音色不存在或已删除，请在声音克隆里刷新列表')
                 }
                 if (voice.status !== 'ready') {
-                    throw new Error(`音色仍在训练中（当前状态: ${voice.status}）`)
+                    throw new Error('音色仍在训练中（当前状态：' + voice.status + '）')
                 }
             } catch (checkErr: any) {
                 throw new Error(checkErr?.message || '音色状态检查失败，请稍后再试')
@@ -804,7 +975,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 抖音主页获取 ==========
+    // ========== 鎶栭煶涓婚〉鑾峰彇 ==========
     ipcMain.handle('douyin-fetch-profile-videos', async (_event, profileUrl: string, count: number = 10) => {
         try {
             const videos = await fetchProfileVideos(profileUrl, count)
@@ -823,14 +994,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 视频下载 ==========
+    // ========== 瑙嗛涓嬭浇 ==========
     ipcMain.handle('download-video', async (_event, url: string) => {
         try {
             const outputDir = path.join(config.outputDir, 'downloads')
             const result = await downloadDouyinVideo(url, outputDir, (percent, message) => {
                 mainWindow.webContents.send('download-progress', { percent, message })
             })
-            // 返回格式需要符合前端期望: { success, data: { videoPath, title } }
+            // 杩斿洖鏍煎紡闇€瑕佺鍚堝墠绔湡鏈? { success, data: { videoPath, title } }
             if (result.success) {
                 return { success: true, data: { videoPath: result.videoPath, title: result.title } }
             } else {
@@ -844,13 +1015,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     ipcMain.handle('select-video-file', async () => {
         try {
             if (!mainWindow) {
-                throw new Error('窗口尚未准备')
+                throw new Error('绐楀彛灏氭湭鍑嗗')
             }
             const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-                title: '选择本地视频',
+                title: '閫夋嫨鏈湴瑙嗛',
                 properties: ['openFile'],
                 filters: [
-                    { name: '视频', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm', 'ts'] },
+                    { name: '瑙嗛', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm', 'ts'] },
                 ],
             })
             if (canceled || !filePaths || filePaths.length === 0) {
@@ -865,13 +1036,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     ipcMain.handle('select-audio-file', async () => {
         try {
             if (!mainWindow) {
-                throw new Error('窗口尚未准备')
+                throw new Error('绐楀彛灏氭湭鍑嗗')
             }
             const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-                title: '选择本地音频',
+                title: '閫夋嫨鏈湴闊抽',
                 properties: ['openFile'],
                 filters: [
-                    { name: '音频', extensions: ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] },
+                    { name: '闊抽', extensions: ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'] },
                 ],
             })
             if (canceled || !filePaths || filePaths.length === 0) {
@@ -886,13 +1057,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     ipcMain.handle('select-text-file', async () => {
         try {
             if (!mainWindow) {
-                throw new Error('窗口尚未准备')
+                throw new Error('绐楀彛灏氭湭鍑嗗')
             }
             const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-                title: '选择文案文本',
+                title: '閫夋嫨鏂囨鏂囨湰',
                 properties: ['openFile'],
                 filters: [
-                    { name: '文本', extensions: ['txt', 'md'] },
+                    { name: '鏂囨湰', extensions: ['txt', 'md'] },
                 ],
             })
             if (canceled || !filePaths || filePaths.length === 0) {
@@ -931,10 +1102,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
     // ========== 语音转文字 ==========
     ipcMain.handle('transcribe-audio', async (_event, videoPath: string) => {
         try {
-            // 检查凭据
+            // 妫€鏌ュ嚟鎹?
             if (!config.tencent.secretId || !config.tencent.secretKey) {
                 const loadedPath = process.env.VIRAL_VIDEO_AGENT_ENV_PATH_LOADED || '（未加载任何 .env 文件）'
-                throw new Error(`未检测到腾讯云凭据（TENCENT_SECRET_ID/KEY）。当前加载的环境文件: ${loadedPath}。请确保已在对应的 .env 文件中正确配置。`)
+                throw new Error('未检测到腾讯云凭据（TENCENT_SECRET_ID/KEY）。当前加载的环境文件：' + loadedPath + '。请确保已在对应的 .env 文件中正确配置。')
             }
 
             // 检查视频文件是否存在
@@ -957,24 +1128,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 await extractAudio(videoPath, audioPath, 'mp3', { sampleRate: 16000, channels: 1 })
             } catch (ffmpegError: any) {
                 console.error('[ASR] FFmpeg 提取音频失败:', ffmpegError)
-                throw new Error(`音频提取失败 (可能视频无声或编码不支持): ${ffmpegError.message || ffmpegError}`)
+                throw new Error(`音频提取失败（可能视频无声或编码不支持）: ${ffmpegError.message || ffmpegError}`)
             }
 
             if (!fs.existsSync(audioPath) || fs.statSync(audioPath).size < 100) {
                 throw new Error('提取出的音频文件无效（文件过小或不存在）')
             }
 
-            // 获取音频时长
+            // 鑾峰彇闊抽鏃堕暱
             let duration = 0
             try {
                 duration = await getMediaDuration(audioPath)
             } catch {
-                duration = 300 // 默认假设 5 分钟
+                duration = 300 // 榛樿鍋囪 5 鍒嗛挓
             }
 
             console.log('[ASR] 音频时长:', duration.toFixed(1), '秒')
 
-            // 检查时长限制（10分钟，放宽一点）
+            // 妫€鏌ユ椂闀块檺鍒讹紙10鍒嗛挓锛屾斁瀹戒竴鐐癸級
             if (duration > 600) {
                 if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath)
                 throw new Error('视频时长超过 10 分钟，请使用较短的视频')
@@ -984,7 +1155,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
 
             const { recognizeSentence } = await import('../src/services/asrService')
 
-            // 如果音频短于 50 秒，直接识别
+            // 濡傛灉闊抽鐭簬 50 绉掞紝鐩存帴璇嗗埆
             if (duration <= 50) {
                 console.log('[ASR] 使用一句话识别模式（短音频）')
                 const audioBase64 = fs.readFileSync(audioPath).toString('base64')
@@ -994,9 +1165,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 return { success: true, data: text || '（未识别到文字）' }
             }
 
-            // 长音频：分段处理
+            // 闀块煶棰戯細鍒嗘澶勭悊
             console.log('[ASR] 使用分段识别模式（长音频）')
-            const segmentDuration = 50 // 每段 50 秒
+            const segmentDuration = 50 // 姣忔 50 绉?
             const segmentCount = Math.ceil(duration / segmentDuration)
             const results: string[] = []
 
@@ -1021,16 +1192,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                     }
                 } catch (e: any) {
                     console.error(`[ASR] 分段 ${i + 1} 处理失败:`, e.message || e)
-                    // 继续处理下一段，不要因为一段失败就全部终止
+                    // 缁х画澶勭悊涓嬩竴娈碉紝涓嶈鍥犱负涓€娈靛け璐ュ氨鍏ㄩ儴缁堟
                 } finally {
-                    // 删除分段文件
+                    // 鍒犻櫎鍒嗘鏂囦欢
                     if (fs.existsSync(segmentPath)) {
                         fs.unlinkSync(segmentPath)
                     }
                 }
             }
 
-            // 清理原始音频
+            // 娓呯悊鍘熷闊抽
             if (fs.existsSync(audioPath)) {
                 fs.unlinkSync(audioPath)
             }
@@ -1048,7 +1219,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== TTS 语音合成 ==========
+    // ========== TTS 璇煶鍚堟垚 ==========
     ipcMain.handle('generate-speech', async (_event, text: string, voiceType: number) => {
         try {
             const outputDir = path.join(config.outputDir, 'audio')
@@ -1068,7 +1239,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         return { success: true, data: getVoiceOptions() }
     })
 
-    // ========== 文案改写 ==========
+    // ========== 鏂囨鏀瑰啓 ==========
     ipcMain.handle('rewrite-copy', async (_event, text: string, mode: string, instruction?: string) => {
         try {
             const result = await rewriteCopy(
@@ -1083,7 +1254,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 文案模式分析 ==========
+    // ========== 鏂囨妯″紡鍒嗘瀽 ==========
     ipcMain.handle('analyze-copy-pattern', async (_event, copies: string) => {
         try {
             const result = await analyzeCopyPattern(
@@ -1096,7 +1267,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 对标博主：生成选题/脚本 ==========
+    // ========== 瀵规爣鍗氫富锛氱敓鎴愰€夐/鑴氭湰 ==========
     ipcMain.handle(
         'benchmark-generate-topics',
         async (
@@ -1125,7 +1296,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     )
 
-    // ========== 账号诊断（结构化报告）==========
+    // ========== 璐﹀彿璇婃柇锛堢粨鏋勫寲鎶ュ憡锛?=========
     ipcMain.handle('account-diagnose', async (_event, payload: { profileUrl?: string; samples: Array<{ title: string; transcript: string }> }) => {
         try {
             const result = await diagnoseAccount(
@@ -1138,7 +1309,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 标题和话题生成 ==========
+    // ========== 鏍囬鍜岃瘽棰樼敓鎴?==========
     ipcMain.handle('generate-title', async (_event, content: string) => {
         try {
             const titles = await generateTitles(config.tencent as HunyuanConfig, content)
@@ -1149,7 +1320,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 数字人视频 ==========
+    // ========== 鏁板瓧浜鸿棰?==========
     const digitalHumanConfig = getDigitalHumanConfig(app.getPath('userData'))
 
     ipcMain.handle('get-avatar-list', async () => {
@@ -1181,7 +1352,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // 检查系统状态 (新增)
+    // 妫€鏌ョ郴缁熺姸鎬?(鏂板)
     ipcMain.handle('digital-human-check-system', async (_event, params?: { qualityPreset?: 'quality' | 'fast' }) => {
         try {
             const status = await checkSystemReady(digitalHumanConfig, { qualityPreset: params?.qualityPreset })
@@ -1191,7 +1362,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // 初始化系统
+    // 鍒濆鍖栫郴缁?
     ipcMain.handle('digital-human-initialize', async (_event, params?: { qualityPreset?: 'quality' | 'fast' }) => {
         try {
             await initializeSystem(digitalHumanConfig, (progress) => {
@@ -1203,7 +1374,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // 保存源视频
+    // 淇濆瓨婧愯棰?
     ipcMain.handle('digital-human-save-source', async (_event, params: { videoBuffer: string, name: string }) => {
         try {
             const buffer = Buffer.from(params.videoBuffer, 'base64')
@@ -1214,7 +1385,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 封面生成 ==========
+    // ========== 灏侀潰鐢熸垚 ==========
     ipcMain.handle('generate-cover', async (_event, prompt: string) => {
         try {
             const outputDir = path.join(config.outputDir, 'covers')
@@ -1250,7 +1421,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 全自动流水线 ==========
+    // ========== 鍏ㄨ嚜鍔ㄦ祦姘寸嚎 ==========
     ipcMain.handle('run-pipeline', async (_event, params: { douyinUrl: string }) => {
         try {
             const pipelineConfig = getConfig()
@@ -1258,8 +1429,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 pipelineConfig,
                 params.douyinUrl,
                 {
-                    rewriteMode: 'auto', // 默认自动改写
-                    voiceType: 101001,   // 默认音色
+                    rewriteMode: 'auto', // 榛樿鑷姩鏀瑰啓
+                    voiceType: 101001,   // 榛樿闊宠壊
                 },
                 (progress) => {
                     mainWindow.webContents.send('pipeline-progress', progress)
@@ -1291,7 +1462,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`
     }
 
-    // ========== 字幕文件生成 ==========
+    // ========== 瀛楀箷鏂囦欢鐢熸垚 ==========
     ipcMain.handle('generate-subtitle-file', async (_event, params?: { segments?: Array<{ startTime: number; endTime: number; text: string }>; text?: string }) => {
         try {
             const subtitlesDir = path.join(config.outputDir, 'subtitles')
@@ -1329,7 +1500,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
 
     ipcMain.handle('get-video-duration', async (_event, videoPath: string) => {
         try {
-            if (!videoPath) throw new Error('videoPath 为空')
+            if (!videoPath) throw new Error('videoPath 涓虹┖')
             const duration = await getMediaDuration(videoPath)
             return { success: true, data: duration }
         } catch (error: any) {
@@ -1337,7 +1508,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== 视频处理 ==========
+    // ========== 瑙嗛澶勭悊 ==========
     ipcMain.handle('add-subtitles', async (_event, videoPath: string, subtitlePath: string) => {
         try {
             const outputDir = path.join(config.outputDir, 'video')
@@ -1362,7 +1533,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
 
 
 
-    // ========== 通用 ==========
+    // ========== 閫氱敤 ==========
     ipcMain.handle('get-app-path', () => {
         return app.getPath('userData')
     })
@@ -1371,7 +1542,48 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         return config.outputDir
     })
 
-    // ========== 保存文件到桌面（用于“下载”体验）==========
+    // ========== 合规确认（本地持久化）==========
+    ipcMain.handle('legal-consent-get', async () => {
+        try {
+            const fs = await import('fs')
+            const consentPath = path.join(app.getPath('userData'), 'legal_consent.json')
+            if (!fs.existsSync(consentPath)) {
+                return { success: true, data: { accepted: false } }
+            }
+            const raw = fs.readFileSync(consentPath, 'utf-8')
+            const parsed = raw ? JSON.parse(raw) : {}
+            return {
+                success: true,
+                data: {
+                    accepted: !!parsed?.acceptedAt,
+                    version: parsed?.version,
+                    acceptedAt: parsed?.acceptedAt,
+                    deviceId: parsed?.deviceId,
+                },
+            }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
+
+    ipcMain.handle('legal-consent-accept', async (_event, payload: { version?: string; [k: string]: any }) => {
+        try {
+            const fs = await import('fs')
+            const consentPath = path.join(app.getPath('userData'), 'legal_consent.json')
+            const next = {
+                version: String(payload?.version || ''),
+                acceptedAt: new Date().toISOString(),
+                deviceId,
+                extra: payload || {},
+            }
+            fs.writeFileSync(consentPath, JSON.stringify(next, null, 2), 'utf-8')
+            return { success: true, data: next }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
+
+    // ========== 淇濆瓨鏂囦欢鍒版闈紙鐢ㄤ簬鈥滀笅杞解€濅綋楠岋級==========
     ipcMain.handle('save-to-desktop', async (_event, params: { sourcePath: string, fileName?: string }) => {
         try {
             const fs = await import('fs')
@@ -1408,8 +1620,43 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
         }
     })
 
-    // ========== HeyGem 数字人 ==========
-    // ========== 全网分发（social-auto-upload）==========
+    // ========== 保存文件到“社区作品库”（用于直播展示）==========
+    ipcMain.handle('save-to-community', async (_event, params: { sourcePath: string; title?: string }) => {
+        try {
+            const fs = await import('fs')
+            const sourcePath = String(params?.sourcePath || '').trim()
+            if (!sourcePath) {
+                throw new Error('sourcePath 为空')
+            }
+            if (!fs.existsSync(sourcePath)) {
+                throw new Error('文件不存在: ' + sourcePath)
+            }
+
+            const communityDir = path.join(config.outputDir, 'community')
+            if (!fs.existsSync(communityDir)) fs.mkdirSync(communityDir, { recursive: true })
+
+            const rawTitle = String(params?.title || '').trim()
+            const safeTitle = rawTitle
+                .replace(/[\\/:*?"<>|]+/g, '_')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 60)
+            const baseName = safeTitle || 'digital_human'
+            const ext = path.extname(sourcePath) || '.mp4'
+
+            let destPath = path.join(communityDir, `${baseName}${ext}`)
+            if (fs.existsSync(destPath)) {
+                destPath = path.join(communityDir, `${baseName}_${Date.now()}${ext}`)
+            }
+            fs.copyFileSync(sourcePath, destPath)
+            return { success: true, data: { destPath } }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
+
+    // ========== HeyGem 鏁板瓧浜?==========
+    // ========== 鍏ㄧ綉鍒嗗彂锛坰ocial-auto-upload锛?=========
     type SocialAutoUploadMeta = {
         installDir: string
         venvPython: string
@@ -1418,9 +1665,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
 
     const ensureSocialAutoUploadRunning = async (): Promise<SocialAutoUploadMeta> => {
         const defaultRepoUrls = [
-            // 官方源
+            // 瀹樻柟婧?
             'https://github.com/dreammis/social-auto-upload',
-            // 国内常见 GitHub 加速（可用性依网络而定）
+            // 鍥藉唴甯歌 GitHub 鍔犻€燂紙鍙敤鎬т緷缃戠粶鑰屽畾锛?
             'https://ghproxy.com/https://github.com/dreammis/social-auto-upload',
             'https://mirror.ghproxy.com/https://github.com/dreammis/social-auto-upload',
             'https://hub.njuu.cf/dreammis/social-auto-upload',
@@ -1431,8 +1678,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             .filter(Boolean)
         let repoUrlsToTry = repoUrls.length > 0 ? repoUrls : defaultRepoUrls
 
-        // Gitee 经常在未登录/风控时要求账号密码，会触发认证弹窗（已禁用交互后会直接失败）
-        // 为了客户体验，默认跳过 gitee 源；如你确认可匿名访问，可设置 SOCIAL_AUTO_UPLOAD_ALLOW_GITEE=1
+        // Gitee 缁忓父鍦ㄦ湭鐧诲綍/椋庢帶鏃惰姹傝处鍙峰瘑鐮侊紝浼氳Е鍙戣璇佸脊绐楋紙宸茬鐢ㄤ氦浜掑悗浼氱洿鎺ュけ璐ワ級
+        // 涓轰簡瀹㈡埛浣撻獙锛岄粯璁よ烦杩?gitee 婧愶紱濡備綘纭鍙尶鍚嶈闂紝鍙缃?SOCIAL_AUTO_UPLOAD_ALLOW_GITEE=1
         const allowGitee = (process.env.SOCIAL_AUTO_UPLOAD_ALLOW_GITEE || '').trim() === '1'
         if (!allowGitee) {
             const before = repoUrlsToTry.length
@@ -1458,12 +1705,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 env: {
                     ...process.env,
                     ...(envOverride ? envOverride : {}),
-                    // 避免弹出 Git Credential Manager / 交互式认证窗口（客户体验灾难）
-                    // 失败应当直接返回错误提示，由应用引导用户配置镜像或离线包。
+                    // 閬垮厤寮瑰嚭 Git Credential Manager / 浜や簰寮忚璇佺獥鍙ｏ紙瀹㈡埛浣撻獙鐏鹃毦锛?
+                    // 澶辫触搴斿綋鐩存帴杩斿洖閿欒鎻愮ず锛岀敱搴旂敤寮曞鐢ㄦ埛閰嶇疆闀滃儚鎴栫绾垮寘銆?
                     GIT_TERMINAL_PROMPT: '0',
                     GCM_INTERACTIVE: 'Never',
                     GIT_ASKPASS: 'echo',
-                    // Windows 默认控制台编码可能是 GBK，会导致 social-auto-upload 的 createTable.py 打印 emoji 时报错
+                    // Windows 榛樿鎺у埗鍙扮紪鐮佸彲鑳芥槸 GBK锛屼細瀵艰嚧 social-auto-upload 鐨?createTable.py 鎵撳嵃 emoji 鏃舵姤閿?
                     PYTHONUTF8: '1',
                     PYTHONIOENCODING: 'utf-8',
                 },
@@ -1477,7 +1724,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                         return
                     }
                     if (command === 'python' || command === 'python3' || command === 'py' || command.endsWith('python.exe')) {
-                        reject(new Error('未检测到 Python：请先安装 Python 3 并勾选 “Add to PATH”，然后重试'))
+                        reject(new Error('鏈娴嬪埌 Python锛氳鍏堝畨瑁?Python 3 骞跺嬀閫?鈥淎dd to PATH鈥濓紝鐒跺悗閲嶈瘯'))
                         return
                     }
                 }
@@ -1524,11 +1771,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                         resolve()
                         return
                     }
-                    if (Date.now() - started > timeoutMs) reject(new Error('分发服务启动超时'))
+                    if (Date.now() - started > timeoutMs) reject(new Error('鍒嗗彂鏈嶅姟鍚姩瓒呮椂'))
                     else setTimeout(tick, 500)
                 })
                 req.on('error', () => {
-                    if (Date.now() - started > timeoutMs) reject(new Error('分发服务启动超时'))
+                    if (Date.now() - started > timeoutMs) reject(new Error('鍒嗗彂鏈嶅姟鍚姩瓒呮椂'))
                     else setTimeout(tick, 500)
                 })
             }
@@ -1539,8 +1786,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             fs.mkdirSync(path.dirname(installDir), { recursive: true })
 
             const resolveBundledDir = () => {
-                // 在开发环境下优先使用当前工作区的脚本，确保改动即时生效；
-                // 打包后再回落到内置目录/资源目录。
+                // 鍦ㄥ紑鍙戠幆澧冧笅浼樺厛浣跨敤褰撳墠宸ヤ綔鍖虹殑鑴氭湰锛岀‘淇濇敼鍔ㄥ嵆鏃剁敓鏁堬紱
+                // 鎵撳寘鍚庡啀鍥炶惤鍒板唴缃洰褰?璧勬簮鐩綍銆?
                 const candidates: string[] = []
                 const pushCandidate = (p?: string) => {
                     if (!p) return
@@ -1560,7 +1807,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 return { dir: '', candidates }
             }
 
-            // 直接使用内置版本（打包时一起分发，避免国内网络问题）
+            // 鐩存帴浣跨敤鍐呯疆鐗堟湰锛堟墦鍖呮椂涓€璧峰垎鍙戯紝閬垮厤鍥藉唴缃戠粶闂锛?
             const { dir: bundledDir, candidates: bundledCandidates } = resolveBundledDir()
             const bundledMarker = bundledDir ? path.join(bundledDir, 'requirements.txt') : ''
 
@@ -1569,9 +1816,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                 fs.cpSync(bundledDir, installDir, { recursive: true })
             } else {
                 throw new Error(
-                    `分发中心组件未找到。\n` +
-                    `请确认项目包含 python/social-auto-upload 目录。\n` +
-                    `查找路径(按顺序): ${bundledCandidates.join(' | ')}`
+                    `鍒嗗彂涓績缁勪欢鏈壘鍒般€俓n` +
+                    `璇风‘璁ら」鐩寘鍚?python/social-auto-upload 鐩綍銆俓n` +
+                    `鏌ユ壘璺緞(鎸夐『搴?: ${bundledCandidates.join(' | ')}`
                 )
             }
         }
@@ -1648,8 +1895,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             fs.copyFileSync(confExamplePy, confPy)
         }
 
-        // social-auto-upload 的部分 uploader 需要本机浏览器路径（LOCAL_CHROME_PATH），否则 /postVideo 会直接 500
-        // 这里自动探测并写入 conf.py，尽量避免用户手工配置。
+        // social-auto-upload 鐨勯儴鍒?uploader 闇€瑕佹湰鏈烘祻瑙堝櫒璺緞锛圠OCAL_CHROME_PATH锛夛紝鍚﹀垯 /postVideo 浼氱洿鎺?500
+        // 杩欓噷鑷姩鎺㈡祴骞跺啓鍏?conf.py锛屽敖閲忛伩鍏嶇敤鎴锋墜宸ラ厤缃€?
         try {
             const candidates: string[] = []
             const envCandidate = (process.env.SAU_CHROME_PATH || process.env.CHROME_PATH || '').trim()
@@ -1685,8 +1932,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                     logPublish('social-auto-upload:conf:auto-set-browser', { detected })
                 }
 
-                // 为了让用户能扫码/处理登录风控，默认强制 headed（LOCAL_CHROME_HEADLESS=False）
-                // 如需强制 headless，可设置环境变量 SAU_FORCE_HEADLESS=1
+                // 涓轰簡璁╃敤鎴疯兘鎵爜/澶勭悊鐧诲綍椋庢帶锛岄粯璁ゅ己鍒?headed锛圠OCAL_CHROME_HEADLESS=False锛?
+                // 濡傞渶寮哄埗 headless锛屽彲璁剧疆鐜鍙橀噺 SAU_FORCE_HEADLESS=1
                 const forceHeadless = (process.env.SAU_FORCE_HEADLESS || '').trim() === '1'
                 const desired = forceHeadless ? 'True' : 'False'
                 const cur = fs.readFileSync(confPy, 'utf-8')
@@ -1711,7 +1958,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
                     await run(process.env.PYTHON || 'python', [createTablePy], dbDir)
                 } catch (e: any) {
                     const msg = safeErrorMessage(e)
-                    // Windows 控制台默认 GBK 时，createTable.py 打印 emoji 可能触发 UnicodeEncodeError
+                    // Windows 鎺у埗鍙伴粯璁?GBK 鏃讹紝createTable.py 鎵撳嵃 emoji 鍙兘瑙﹀彂 UnicodeEncodeError
                     if (msg.includes('UnicodeEncodeError') || msg.includes('gbk')) {
                         logPublish('social-auto-upload:createTable:retry-utf8', { reason: 'UnicodeEncodeError/gbk' })
                         await run(process.env.PYTHON || 'python', ['-X', 'utf8', createTablePy], dbDir)
@@ -1760,7 +2007,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow) {
             }
         }
 
-        // social-auto-upload 要求提前创建 cookiesFile / videoFile 目录，否则 /uploadSave 会 500（No such file or directory）
+        // social-auto-upload 瑕佹眰鎻愬墠鍒涘缓 cookiesFile / videoFile 鐩綍锛屽惁鍒?/uploadSave 浼?500锛圢o such file or directory锛?
         try {
             fs.mkdirSync(path.join(installDir, 'cookiesFile'), { recursive: true })
             fs.mkdirSync(path.join(installDir, 'videoFile'), { recursive: true })
@@ -1862,7 +2109,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
 
         const { stdout } = await runCapture(meta.venvPython, ['-c', py], meta.installDir)
         const parsed = JSON.parse(stdout.trim())
-        if (!parsed?.filePath) throw new Error('写入分发账号失败：未返回 filePath')
+        if (!parsed?.filePath) throw new Error('鍐欏叆鍒嗗彂璐﹀彿澶辫触锛氭湭杩斿洖 filePath')
         return parsed as { id: number; filePath: string }
     }
 
@@ -1891,7 +2138,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
 
     const uploadToSocialAutoUpload = async (filePath: string, filenameBase?: string) => {
         const stat = fs.statSync(filePath)
-        if (!stat.isFile()) throw new Error('不是有效文件: ' + filePath)
+        if (!stat.isFile()) throw new Error('涓嶆槸鏈夋晥鏂囦欢: ' + filePath)
 
         const form = new FormData()
         form.append('file', fs.createReadStream(filePath))
@@ -1907,19 +2154,19 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                 res.on('end', () => {
                     const status = res.statusCode || 0
                     if (status < 200 || status >= 300) {
-                        reject(new Error(`上传到分发中心失败 (HTTP ${res.statusCode}) ${data.slice(0, 200)}`))
+                        reject(new Error(`涓婁紶鍒板垎鍙戜腑蹇冨け璐?(HTTP ${res.statusCode}) ${data.slice(0, 200)}`))
                         return
                     }
                     try {
                         const parsed = JSON.parse(data)
                         const filepath = parsed?.data?.filepath || parsed?.data?.filePath || parsed?.data?.id
                         if (!filepath || typeof filepath !== 'string') {
-                            reject(new Error(`上传到分发中心失败：未返回文件存储名 ${data.slice(0, 200)}`))
+                            reject(new Error(`涓婁紶鍒板垎鍙戜腑蹇冨け璐ワ細鏈繑鍥炴枃浠跺瓨鍌ㄥ悕 ${data.slice(0, 200)}`))
                             return
                         }
                         resolve({ storageName: filepath })
                     } catch {
-                        reject(new Error(`上传到分发中心失败：响应非 JSON ${data.slice(0, 200)}`))
+                        reject(new Error(`涓婁紶鍒板垎鍙戜腑蹇冨け璐ワ細鍝嶅簲闈?JSON ${data.slice(0, 200)}`))
                     }
                 })
             })
@@ -1949,7 +2196,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                     const mediaDir = path.join(userData, 'social-auto-upload', 'media')
 
                     const rejectCancelled = (msg?: string) => {
-                        const err: any = new Error(msg || '用户取消发布')
+                        const err: any = new Error(msg || '鐢ㄦ埛鍙栨秷鍙戝竷')
                         err.name = 'PublishCancelledError'
                         err.code = 499
                         err.httpStatus = status
@@ -1995,8 +2242,8 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                         const tail = tailLog()
                         const media = listMedia()
                         return [
-                            `请查看日志：${logFile}`,
-                            media.length ? `诊断文件（最新 10 个）：${media.join(', ')}` : '',
+                            `璇锋煡鐪嬫棩蹇楋細${logFile}`,
+                            media.length ? `璇婃柇鏂囦欢锛堟渶鏂?10 涓級锛?{media.join(', ')}` : '',
                             tail ? `---- social-auto-upload.log (tail) ----\n${tail}` : '',
                         ].filter(Boolean).join('\n')
                     }
@@ -2013,18 +2260,18 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
 
                     if (status < 200 || status >= 300) {
                         const hint = buildHint()
-                        reject(new Error(`发布失败 (HTTP ${status}) ${data.slice(0, 400)}\n${hint ? `\n${hint}` : ''}`))
+                        reject(new Error(`鍙戝竷澶辫触 (HTTP ${status}) ${data.slice(0, 400)}\n${hint ? `\n${hint}` : ''}`))
                         return
                     }
                     try {
                         const parsed = JSON.parse(data)
                         if (parsed?.code && parsed.code !== 200) {
                             if (parsed.code === 499) {
-                                rejectCancelled(parsed?.msg || '用户取消发布')
+                                rejectCancelled(parsed?.msg || '鐢ㄦ埛鍙栨秷鍙戝竷')
                                 return
                             }
                             const hint = buildHint()
-                            reject(new Error(`发布失败: ${parsed?.msg || data.slice(0, 200)}\n${hint ? `\n${hint}` : ''}`))
+                            reject(new Error(`鍙戝竷澶辫触: ${parsed?.msg || data.slice(0, 200)}\n${hint ? `\n${hint}` : ''}`))
                             return
                         }
                         resolve()
@@ -2078,7 +2325,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                 socialAutoUploadWindow = new BrowserWindow({
                     width: 1200,
                     height: 850,
-                    title: '全网分发中心',
+                    title: '鍏ㄧ綉鍒嗗彂涓績',
                     webPreferences: {
                         nodeIntegration: false,
                         contextIsolation: true,
@@ -2107,7 +2354,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
             publishOneClickBusy = true
 
             logPublish('publish-one-click:start', { platforms, hasVideoPath: !!videoPath, titleLen: title.length })
-            if (!videoPath || !fs.existsSync(videoPath)) throw new Error('未找到要发布的视频文件，请先完成出片')
+            if (!videoPath || !fs.existsSync(videoPath)) throw new Error('鏈壘鍒拌鍙戝竷鐨勮棰戞枃浠讹紝璇峰厛瀹屾垚鍑虹墖')
             if (platforms.length === 0) throw new Error('请至少选择一个发布平台')
 
             const meta = await ensureSocialAutoUploadRunning()
@@ -2161,7 +2408,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                     if (isCancelled) {
                         cancelled = true
                         logPublish('publish-one-click:postVideo:canceled', { platform })
-                        results.push({ platform, ok: false, error: '用户取消发布' })
+                        results.push({ platform, ok: false, error: '鐢ㄦ埛鍙栨秷鍙戝竷' })
                         break
                     }
                     logPublish('publish-one-click:postVideo:error', { platform, error: safeErrorMessage(e) })
@@ -2202,7 +2449,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
             const userName = (params?.userName || '').trim()
             logPublish('publish-cookie-apply:start', { platform, userName })
             if (!platform || !(platform in PUBLISH_PLATFORM_TYPE) || !userName) {
-                throw new Error('参数错误')
+                throw new Error('鍙傛暟閿欒')
             }
 
             const entry = readPublishCookieStore().find(e => e.platform === platform && e.userName === userName)
@@ -2253,7 +2500,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
             const { trainAvatarModel } = await import('../src/services/heygemService')
             const fs = await import('fs')
 
-            // 保存视频到临时文件
+            // 淇濆瓨瑙嗛鍒颁复鏃舵枃浠?
             const tempDir = path.join(config.outputDir, 'temp')
             if (!fs.existsSync(tempDir)) {
                 fs.mkdirSync(tempDir, { recursive: true })
@@ -2319,12 +2566,12 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
             const models = getTrainedModels({ dataPath: process.env.HEYGEM_DATA_PATH })
             const model = models.find(m => m.id === params.modelId)
             if (!model) {
-                throw new Error('找不到指定的声音模型')
+                throw new Error('鎵句笉鍒版寚瀹氱殑澹伴煶妯″瀷')
             }
 
             const text = (params.text || '').trim()
             if (!text) {
-                throw new Error('文本为空')
+                throw new Error('鏂囨湰涓虹┖')
             }
 
             const outputDir = path.join(config.outputDir, 'audio')
@@ -2352,9 +2599,9 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
         }
     })
 
-    // ========== 云端 GPU 数字人服务 ==========
+    // ========== 浜戠 GPU 鏁板瓧浜烘湇鍔?==========
 
-    // 检查云端 GPU 服务器状态
+    // 妫€鏌ヤ簯绔?GPU 鏈嶅姟鍣ㄧ姸鎬?
     ipcMain.handle('cloud-gpu-check-status', async () => {
         try {
             const { checkCloudGpuStatus } = await import('../src/services/cloudGpuService')
@@ -2370,7 +2617,21 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
         }
     })
 
-    // 获取已保存的云端形象列表
+    ipcMain.handle('cloud-gpu-cancel-synthesis', async (event) => {
+        abortCloudGpu(event.sender.id, 'synth')
+        safeSend(event.sender, 'cloud-gpu-progress', { progress: 0, message: '已取消合成' })
+        if (mainWindow.webContents.id !== event.sender.id) safeSend(mainWindow.webContents, 'cloud-gpu-progress', { progress: 0, message: '已取消合成' })
+        return { success: true }
+    })
+
+    ipcMain.handle('cloud-gpu-cancel-download', async (event) => {
+        abortCloudGpu(event.sender.id, 'download')
+        safeSend(event.sender, 'cloud-gpu-download-progress', { progress: 0, message: '已取消下载' })
+        if (mainWindow.webContents.id !== event.sender.id) safeSend(mainWindow.webContents, 'cloud-gpu-download-progress', { progress: 0, message: '已取消下载' })
+        return { success: true }
+    })
+
+    // 鑾峰彇宸蹭繚瀛樼殑浜戠褰㈣薄鍒楄〃
     ipcMain.handle('cloud-gpu-get-avatars', async () => {
         try {
             const { getCloudAvatarModels } = await import('../src/services/cloudGpuService')
@@ -2383,7 +2644,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
         }
     })
 
-    // 保存形象视频信息（用户上传形象视频后调用）
+    // 淇濆瓨褰㈣薄瑙嗛淇℃伅锛堢敤鎴蜂笂浼犲舰璞¤棰戝悗璋冪敤锛?
     ipcMain.handle('cloud-gpu-save-avatar', async (_event, params: {
         videoBuffer: string
         avatarName: string
@@ -2402,7 +2663,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
 
             const modelId = uuidv4()
 
-            // 保存本地预览副本
+            // 淇濆瓨鏈湴棰勮鍓湰
             const localPreviewDir = path.join(localDataPath, 'previews')
             if (!fs.existsSync(localPreviewDir)) {
                 fs.mkdirSync(localPreviewDir, { recursive: true })
@@ -2410,7 +2671,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
             const localPreviewPath = path.join(localPreviewDir, `${modelId}.mp4`)
             fs.writeFileSync(localPreviewPath, Buffer.from(params.videoBuffer, 'base64'))
 
-            // 如果用户手动指定了服务端路径，则直接保存本地记录即可
+            // 濡傛灉鐢ㄦ埛鎵嬪姩鎸囧畾浜嗘湇鍔＄璺緞锛屽垯鐩存帴淇濆瓨鏈湴璁板綍鍗冲彲
             if (params.remoteVideoPath) {
                 const model = {
                     id: modelId,
@@ -2428,7 +2689,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                 return { success: true, data: model }
             }
 
-            // 否则：尝试把形象视频上传到云端 /code/data，避免后续合成时服务端找不到文件
+            // 鍚﹀垯锛氬皾璇曟妸褰㈣薄瑙嗛涓婁紶鍒颁簯绔?/code/data锛岄伩鍏嶅悗缁悎鎴愭椂鏈嶅姟绔壘涓嶅埌鏂囦欢
             const { serverUrl, videoPort } = getCloudGpuRuntime()
             if (serverUrl) {
                 const { uploadAvatarVideo } = await import('../src/services/cloudGpuService')
@@ -2444,7 +2705,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                     modelId
                 )
 
-                // uploadAvatarVideo 已写入 modelsDir 的 JSON；这里返回给渲染进程即可
+                // uploadAvatarVideo 宸插啓鍏?modelsDir 鐨?JSON锛涜繖閲岃繑鍥炵粰娓叉煋杩涚▼鍗冲彲
                 return {
                     success: true,
                     data: {
@@ -2454,7 +2715,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                 }
             }
 
-            // 未配置服务端：仅保存本地记录（后续无法云端合成）
+            // 鏈厤缃湇鍔＄锛氫粎淇濆瓨鏈湴璁板綍锛堝悗缁棤娉曚簯绔悎鎴愶級
             const model = {
                 id: modelId,
                 name: params.avatarName,
@@ -2474,7 +2735,7 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
         }
     })
 
-    // 删除云端形象
+    // 鍒犻櫎浜戠褰㈣薄
     ipcMain.handle('cloud-gpu-delete-avatar', async (_event, modelId: string) => {
         try {
             const { deleteCloudAvatarModel } = await import('../src/services/cloudGpuService')
@@ -2487,18 +2748,23 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
         }
     })
 
-    // 生成云端数字人视频
-    ipcMain.handle('cloud-gpu-generate-video', async (_event, params: {
-        avatarVideoPath: string  // 服务器上的形象视频路径
-        audioPath: string        // 本地音频文件路径
+    // 鐢熸垚浜戠鏁板瓧浜鸿棰?
+    ipcMain.handle('cloud-gpu-generate-video', async (event, params: {
+        avatarVideoPath: string  // 鏈嶅姟鍣ㄤ笂鐨勫舰璞¤棰戣矾寰?
+        audioPath: string        // 鏈湴闊抽鏂囦欢璺緞
     }) => {
         let tempAudioPath: string | null = null
+        const entry = getCloudGpuEntry(event.sender.id)
+        abortCloudGpu(event.sender.id, 'generate')
+        const controller = new AbortController()
+        entry.generate = controller
         try {
             const { generateCloudVideoWithLocalPaths } = await import('../src/services/cloudGpuService')
+            const emitProgress = createThrottledProgressSender(event.sender, 'cloud-gpu-progress')
 
-            // Duix/HeyGem：统一传 16k/mono/pcm_s16le WAV，避免服务端识别/封装问题
+            // Duix/HeyGem锛氱粺涓€浼?16k/mono/pcm_s16le WAV锛岄伩鍏嶆湇鍔＄璇嗗埆/灏佽闂
             const tempDir = path.join(app.getPath('userData'), 'cloud_gpu_data', 'temp_audio')
-            tempAudioPath = convertAudioToDuixWavPcm16k(params.audioPath, tempDir)
+            tempAudioPath = await convertAudioToDuixWavPcm16kAsync(params.audioPath, tempDir, controller.signal)
 
             const videoPath = await generateCloudVideoWithLocalPaths(
                 {
@@ -2507,33 +2773,39 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                 },
                 params.avatarVideoPath,
                 tempAudioPath,
-                (progress: number, message: string) => {
-                    mainWindow.webContents.send('cloud-gpu-progress', { progress, message })
-                }
+                emitProgress,
+                controller.signal
             )
             return { success: true, data: { videoPath } }
         } catch (error: any) {
+            if (controller.signal.aborted) return { success: false, canceled: true, error: '已取消生成' }
             return { success: false, error: error.message }
         } finally {
+            if (entry.generate === controller) entry.generate = undefined
             if (tempAudioPath) {
                 try { fs.unlinkSync(tempAudioPath) } catch { /* ignore */ }
             }
         }
     })
 
-    // 仅合成视频（不下载）
-    ipcMain.handle('cloud-gpu-synthesize-only', async (_event, params: {
+    // 浠呭悎鎴愯棰戯紙涓嶄笅杞斤級
+    ipcMain.handle('cloud-gpu-synthesize-only', async (event, params: {
         avatarVideoPath: string
         audioPath: string
     }) => {
         console.log('[IPC] cloud-gpu-synthesize-only 开始', params)
         let tempAudioPath: string | null = null
+        const entry = getCloudGpuEntry(event.sender.id)
+        abortCloudGpu(event.sender.id, 'synth')
+        const controller = new AbortController()
+        entry.synth = controller
         try {
             const { synthesizeCloudVideoOnly } = await import('../src/services/cloudGpuService')
+            const emitProgress = createThrottledProgressSender(event.sender, 'cloud-gpu-progress')
 
-            // 统一转换音频格式
+            // 缁熶竴杞崲闊抽鏍煎紡
             const tempDir = path.join(app.getPath('userData'), 'cloud_gpu_data', 'temp_audio')
-            tempAudioPath = convertAudioToDuixWavPcm16k(params.audioPath, tempDir)
+            tempAudioPath = await convertAudioToDuixWavPcm16kAsync(params.audioPath, tempDir, controller.signal)
 
             const result = await synthesizeCloudVideoOnly(
                 {
@@ -2542,40 +2814,53 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                 },
                 params.avatarVideoPath,
                 tempAudioPath,
-                (progress: number, message: string) => {
-                    mainWindow.webContents.send('cloud-gpu-progress', { progress, message })
-                }
+                emitProgress,
+                controller.signal
             )
 
             console.log('[IPC] cloud-gpu-synthesize-only 合成完成:', result)
 
-            // 保存临时音频路径用于后续下载时合并
+            // 淇濆瓨涓存椂闊抽璺緞鐢ㄤ簬鍚庣画涓嬭浇鏃跺悎骞?
             return {
                 success: true,
                 data: {
                     taskCode: result.taskCode,
                     remoteVideoPath: result.remoteVideoPath,
-                    tempAudioPath: tempAudioPath,  // 保留，下载时需要用于合并音频
+                    tempAudioPath: tempAudioPath,  // 淇濈暀锛屼笅杞芥椂闇€瑕佺敤浜庡悎骞堕煶棰?
                 }
             }
         } catch (error: any) {
             console.error('[IPC] cloud-gpu-synthesize-only 失败:', error.message)
-            // 合成失败时清理临时音频
+            if (controller.signal.aborted) {
+                if (tempAudioPath) {
+                    try { fs.unlinkSync(tempAudioPath) } catch { /* ignore */ }
+                }
+                return { success: false, canceled: true, error: '已取消合成' }
+            }
+            // 鍚堟垚澶辫触鏃舵竻鐞嗕复鏃堕煶棰?
             if (tempAudioPath) {
                 try { fs.unlinkSync(tempAudioPath) } catch { /* ignore */ }
             }
             return { success: false, error: error.message }
+        } finally {
+            if (entry.synth === controller) entry.synth = undefined
         }
-        // 注意：tempAudioPath 不在这里清理，因为下载时还需要用
+        // 娉ㄦ剰锛歵empAudioPath 涓嶅湪杩欓噷娓呯悊锛屽洜涓轰笅杞芥椂杩橀渶瑕佺敤
     })
 
-    // 下载已合成的视频
-    ipcMain.handle('cloud-gpu-download-video', async (_event, params: {
+    // 涓嬭浇宸插悎鎴愮殑瑙嗛
+    ipcMain.handle('cloud-gpu-download-video', async (event, params: {
         remoteVideoPath: string
-        tempAudioPath?: string  // 用于合并音频
+        tempAudioPath?: string  // 鐢ㄤ簬鍚堝苟闊抽
     }) => {
+        const entry = getCloudGpuEntry(event.sender.id)
+        abortCloudGpu(event.sender.id, 'download')
+        const controller = new AbortController()
+        entry.download = controller
+        let cleanupTempAudio = false
         try {
             const { downloadCloudVideoToLocal } = await import('../src/services/cloudGpuService')
+            const emitProgress = createThrottledProgressSender(event.sender, 'cloud-gpu-download-progress')
 
             const videoPath = await downloadCloudVideoToLocal(
                 {
@@ -2584,17 +2869,19 @@ print(json.dumps({"id": id_, "filePath": filePath}, ensure_ascii=False))
                 },
                 params.remoteVideoPath,
                 params.tempAudioPath,
-                (progress: number, message: string) => {
-                    mainWindow.webContents.send('cloud-gpu-download-progress', { progress, message })
-                }
+                emitProgress,
+                controller.signal
             )
 
+            cleanupTempAudio = true
             return { success: true, data: { videoPath } }
         } catch (error: any) {
+            if (controller.signal.aborted) return { success: false, canceled: true, error: '已取消下载' }
             return { success: false, error: error.message }
         } finally {
-            // 下载完成后清理临时音频
-            if (params.tempAudioPath) {
+            if (entry.download === controller) entry.download = undefined
+            // 涓嬭浇瀹屾垚鍚庢竻鐞嗕复鏃堕煶棰?
+            if (cleanupTempAudio && params.tempAudioPath) {
                 try { fs.unlinkSync(params.tempAudioPath) } catch { /* ignore */ }
             }
         }

@@ -2,20 +2,11 @@ import { useAppStore } from '../store/appStore'
 import { PlayCircleOutlined, SoundOutlined, PictureOutlined, FileTextOutlined, CopyOutlined, DownloadOutlined } from '@ant-design/icons'
 import { Button, Empty, Space, Tag, Typography, message } from 'antd'
 import { useMemo } from 'react'
+import { toMediaUrl } from '../utils/mediaUrl'
 
 // 将本地文件路径转换为正确编码的 file:// URL
 function toFileUrl(filePath: string): string {
-    // 如果已经是 file:// URL，先解析出路径
-    if (filePath.startsWith('file://')) {
-        filePath = filePath.slice(7)
-    }
-    // 将反斜杠转换为正斜杠，并对每个路径段进行 URL 编码
-    const normalizedPath = filePath.replace(/\\/g, '/')
-    const encoded = normalizedPath
-        .split('/')
-        .map(segment => encodeURIComponent(segment))
-        .join('/')
-    return `file:///${encoded.replace(/^\/+/, '')}`
+    return toMediaUrl(filePath)
 }
 
 function PreviewPanel() {
@@ -126,8 +117,20 @@ function PreviewPanel() {
                 )
             case 'audio':
                 return (
-                    <div style={{ width: '100%' }}>
-                        <audio src={toFileUrl(resolved.content)} controls style={{ width: '100%' }} />
+                    <div className="custom-audio-player">
+                        <div className="audio-visual">
+                            <div className="audio-wave">
+                                {[...Array(20)].map((_, i) => (
+                                    <div key={i} className="wave-bar" style={{ animationDelay: `${i * 0.05}s` }} />
+                                ))}
+                            </div>
+                            <SoundOutlined className="audio-icon" />
+                        </div>
+                        <audio
+                            src={toFileUrl(resolved.content)}
+                            controls
+                            className="audio-element"
+                        />
                     </div>
                 )
             case 'image':

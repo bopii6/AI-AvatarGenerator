@@ -8,7 +8,6 @@ import https from 'https'
 import http from 'http'
 import fs from 'fs'
 import path from 'path'
-import { app, safeStorage } from 'electron'
 import { spawn } from 'child_process'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -38,13 +37,36 @@ interface CookieEntry {
     encrypted: boolean
 }
 
+function tryGetElectron(): { app?: any; safeStorage?: any } {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const electron = require('electron') as any
+        if (electron && typeof electron === 'object' && (electron.app || electron.safeStorage)) {
+            return { app: electron.app, safeStorage: electron.safeStorage }
+        }
+    } catch {
+        // ignore
+    }
+    return {}
+}
+
+function getCookieStorePath(): string {
+    const dataDir = (process.env.VIRAL_VIDEO_AGENT_DATA_DIR || '').trim()
+    if (dataDir) return path.join(dataDir, 'publish_cookies.json')
+
+    const { app } = tryGetElectron()
+    if (app?.getPath) return path.join(app.getPath('userData'), 'publish_cookies.json')
+
+    return path.join(process.cwd(), 'tmp_client_data', 'web', 'publish_cookies.json')
+}
+
 /**
  * 从本地存储读取抖音 Cookie
  * 优先级：本地存储 > 环境变量
  */
 function loadDouyinCookieFromStore(): string | undefined {
     try {
-        const cookieFile = path.join(app.getPath('userData'), 'publish_cookies.json')
+        const cookieFile = getCookieStorePath()
         if (!fs.existsSync(cookieFile)) {
             console.log('[Douyin] 本地无 Cookie 存储，使用环境变量')
             return process.env.DOUYIN_COOKIE
@@ -54,7 +76,8 @@ function loadDouyinCookieFromStore(): string | undefined {
         if (douyinEntry) {
             console.log('[Douyin] 从本地存储读取 Cookie（账号：' + douyinEntry.userName + '）')
             // 如果加密了需要解密
-            if (douyinEntry.encrypted && safeStorage.isEncryptionAvailable()) {
+            const { safeStorage } = tryGetElectron()
+            if (douyinEntry.encrypted && safeStorage?.isEncryptionAvailable?.()) {
                 const buf = Buffer.from(douyinEntry.value, 'base64')
                 const decrypted = safeStorage.decryptString(buf)
                 // Cookie 存储的是 JSON 格式，需要转换为字符串格式

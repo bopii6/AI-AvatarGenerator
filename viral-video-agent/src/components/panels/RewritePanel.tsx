@@ -1,4 +1,4 @@
-import { Button, Input, Space, message, Typography, Divider, Tag, Progress } from 'antd'
+import { Button, Input, Space, message, Typography, Divider, Tag, Progress, Modal } from 'antd'
 import { BulbOutlined, CopyOutlined, DownOutlined, RightOutlined, ThunderboltOutlined, FireOutlined, CheckCircleOutlined, SyncOutlined } from '@ant-design/icons'
 import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../../store/appStore'
@@ -30,7 +30,9 @@ function RewritePanel() {
     const [legalAuditRunning, setLegalAuditRunning] = useState<Record<number, boolean>>({})
     const [legalAuditProgress, setLegalAuditProgress] = useState<Record<number, number>>({})
     const [legalAuditReports, setLegalAuditReports] = useState<Record<number, LegalAuditReport>>({})
+    const [legalOptimizeRunning, setLegalOptimizeRunning] = useState<Record<number, boolean>>({})
     const legalAuditTimersRef = useRef<Record<number, ReturnType<typeof setInterval>>>({})
+    const [legalAuditModalIndex, setLegalAuditModalIndex] = useState<number | null>(null)
 
     const { batchCopies, originalCopy, setRewrittenCopy, setPreview, updateBatchRewrittenCopy, setDigitalHumanSelectedCopy } = useAppStore()
 
@@ -167,7 +169,26 @@ function RewritePanel() {
         return '正在生成合规建议与替换方案...'
     }
 
+    const getLegalAuditCheckSteps = (percent: number) => {
+        const steps = [
+            { until: 15, title: '加载规则库', desc: '社区规范 / 广告法 / 常见审核点' },
+            { until: 35, title: '扫描引流&联系方式', desc: '微信 / 二维码 / 手机号 / 站外导流' },
+            { until: 55, title: '扫描敏感/违禁词', desc: '涉赌涉黄涉毒、武器等高风险内容' },
+            { until: 75, title: '核验高风险承诺', desc: '功效/医疗承诺、收益承诺、绝对化用语' },
+            { until: 90, title: '复核限流触发点', desc: '强指令引导、夸大对比等常见触发点' },
+            { until: 100, title: '生成合规建议', desc: '替换建议 + 一键优化' },
+        ]
+
+        const prevUntil = (i: number) => (i <= 0 ? 0 : steps[i - 1].until)
+        return steps.map((s, i) => {
+            const done = percent >= s.until
+            const active = !done && percent >= prevUntil(i)
+            return { ...s, done, active }
+        })
+    }
+
     const startLegalAudit = (index: number) => {
+        if (legalAuditRunning[index]) return
         const sourceText = String(rewrittenResults[index] || '').trim()
         if (!sourceText) {
             message.warning('请先生成原创文案，再进行一键法务检查')
@@ -178,10 +199,11 @@ function RewritePanel() {
         setLegalAuditReports((prev) => ({ ...prev, [index]: report }))
         setLegalAuditRunning((prev) => ({ ...prev, [index]: true }))
         setLegalAuditProgress((prev) => ({ ...prev, [index]: 0 }))
+        setLegalAuditModalIndex(index)
 
         clearLegalAuditTimer(index)
         const startAt = Date.now()
-        const totalMs = 10000
+        const totalMs = 20000
 
         legalAuditTimersRef.current[index] = setInterval(() => {
             const elapsed = Date.now() - startAt
@@ -192,28 +214,128 @@ function RewritePanel() {
                 clearLegalAuditTimer(index)
                 setLegalAuditProgress((prev) => ({ ...prev, [index]: 100 }))
                 setLegalAuditRunning((prev) => ({ ...prev, [index]: false }))
+                setLegalAuditModalIndex((prev) => (prev === index ? null : prev))
 
-                if (report.status === 'pass') message.success('AI法务：未发现明显违禁/限流风险词（仅供参考）')
-                else if (report.status === 'attention') message.warning('AI法务：发现可优化表达，建议发布前处理')
-                else message.error('AI法务：发现高风险表达，建议先修改再发布')
+                if (report.status === 'pass') message.success('法务体检完成：未发现明显违禁/限流风险词（仅供参考）')
+                else if (report.status === 'attention') message.warning('法务体检完成：发现可优化表达，建议一键优化后再发布')
+                else message.error('法务体检完成：发现高风险表达，建议先一键优化再发布')
             }
         }, 120)
     }
 
     const applyLegalAuditSuggestion = (index: number) => {
-        const report = legalAuditReports[index]
-        const nextText = String(report?.suggestedText || '').trim()
-        if (!nextText) return
+        if (legalAuditRunning[index] || legalOptimizeRunning[index]) return
 
-        const title = String(copies[index]?.title || '逐字稿').trim() || '逐字稿'
-        setRewrittenResults((prev) => ({ ...prev, [index]: nextText }))
-        setRewrittenCopy(nextText)
-        setPreview('text', nextText)
-        setDigitalHumanSelectedCopy({ title, copy: nextText })
-        if (batchCopies.length > 0) {
-            updateBatchRewrittenCopy(index, title, nextText)
+        const report = legalAuditReports[index]
+        const currentText = String(rewrittenResults[index] || '')
+        const suggestedText = String(report?.suggestedText || '').trim()
+
+        const applyNextText = (nextText: string) => {
+            const title = String(copies[index]?.title || '逐字稿').trim() || '逐字稿'
+            setRewrittenResults((prev) => ({ ...prev, [index]: nextText }))
+            setRewrittenCopy(nextText)
+            setPreview('text', nextText)
+            setDigitalHumanSelectedCopy({ title, copy: nextText })
+            if (batchCopies.length > 0) {
+                updateBatchRewrittenCopy(index, title, nextText)
+            }
         }
-        message.success('已应用法务建议文本')
+
+        // 1) 有可直接替换的建议：优先走规则替换（最快）
+        if (suggestedText && suggestedText !== currentText.trim()) {
+            applyNextText(suggestedText)
+            message.success('已应用法务替换建议')
+            return
+        }
+
+        // 2) 否则：对“命中句子”做局部 AI 改写（不重写全文）
+        const instances = Array.isArray(report?.instances) ? report!.instances : []
+        if (instances.length === 0) {
+            message.warning('暂无可优化的命中内容')
+            return
+        }
+        if (!window.electronAPI?.rewriteCopy) {
+            message.error('AI 接口未就绪，请重启应用')
+            return
+        }
+
+        const punctuation = new Set(['。', '！', '？', '!', '?', '\n', '…', '；', ';'])
+        const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
+        const findSentenceStart = (text: string, pos: number) => {
+            const p = clamp(pos, 0, text.length)
+            for (let i = p - 1; i >= 0; i--) {
+                if (punctuation.has(text[i])) return i + 1
+            }
+            return 0
+        }
+        const findSentenceEnd = (text: string, pos: number) => {
+            const p = clamp(pos, 0, text.length)
+            for (let i = p; i < text.length; i++) {
+                if (punctuation.has(text[i])) return i + 1
+            }
+            return text.length
+        }
+
+        const rangesMap = new Map<string, { start: number; end: number; terms: string[] }>()
+        for (const inst of instances) {
+            const s = findSentenceStart(currentText, inst.start)
+            const e = findSentenceEnd(currentText, inst.end)
+            const key = `${s}-${e}`
+            const entry = rangesMap.get(key) || { start: s, end: e, terms: [] }
+            const term = String(inst.term || '').trim()
+            if (term && !entry.terms.includes(term)) entry.terms.push(term)
+            rangesMap.set(key, entry)
+        }
+
+        const ranges = Array.from(rangesMap.values())
+            .filter((r) => r.end > r.start)
+            .sort((a, b) => b.start - a.start)
+            .slice(0, 5)
+
+        if (ranges.length === 0) {
+            message.warning('暂无可优化的句子片段')
+            return
+        }
+
+        setLegalOptimizeRunning((prev) => ({ ...prev, [index]: true }))
+        ;(async () => {
+            try {
+                let nextText = currentText
+                for (const r of ranges) {
+                    const sentence = nextText.slice(r.start, r.end).trim()
+                    if (!sentence) continue
+                    const termsText = r.terms.length > 0 ? `重点处理这些词：${r.terms.join('、')}。` : ''
+                    const instruction = [
+                        '你是短视频平台合规编辑。',
+                        '请只改写下面这句话，使其合规。',
+                        termsText,
+                        '要求：',
+                        '1) 保留原意和语气，尽量少改字；',
+                        '2) 不扩写，不新增信息，不改写其它句子；',
+                        '3) 避免导流/联系方式/站外引导；',
+                        '4) 避免绝对化承诺与收益承诺；',
+                        '5) 只输出改写后的这句话，不要解释。',
+                    ].filter(Boolean).join('\n')
+
+                    const rewrittenSentenceRaw = await window.electronAPI.rewriteCopy(sentence, 'custom', instruction)
+                    const rewrittenSentence = String(rewrittenSentenceRaw || '').trim()
+                    if (!rewrittenSentence) continue
+                    nextText = nextText.slice(0, r.start) + rewrittenSentence + nextText.slice(r.end)
+                }
+
+                const finalText = String(nextText || '').trim()
+                if (!finalText || finalText === currentText.trim()) {
+                    message.warning('未生成可替换的优化结果，可尝试重新检查或手动修改')
+                    return
+                }
+                applyNextText(finalText)
+                message.success('已按命中句子完成 AI 合规优化')
+            } catch (e: any) {
+                message.error(`AI 优化失败：${e?.message || '请重试'}`)
+            } finally {
+                setLegalOptimizeRunning((prev) => ({ ...prev, [index]: false }))
+            }
+        })()
     }
 
     if (copies.length === 0) {
@@ -229,6 +351,82 @@ function RewritePanel() {
 
     return (
         <div style={{ backgroundColor: '#12141a', minHeight: '100%', padding: '24px', color: '#fff', position: 'relative' }}>
+            <Modal
+                open={legalAuditModalIndex !== null && !!legalAuditRunning[legalAuditModalIndex]}
+                centered
+                footer={null}
+                closable
+                maskClosable
+                onCancel={() => setLegalAuditModalIndex(null)}
+                width={760}
+                styles={{
+                    content: {
+                        background: 'linear-gradient(135deg, rgba(146,84,222,0.20), rgba(0,212,170,0.10))',
+                        border: '1px solid rgba(146,84,222,0.28)',
+                        borderRadius: 18,
+                        color: '#fff',
+                    },
+                }}
+            >
+                {legalAuditModalIndex !== null && (
+                    <div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                            <div>
+                                <div style={{ fontSize: 22, fontWeight: 900, color: '#fff' }}>🛡️ 一键法务检查进行中</div>
+                                <div style={{ marginTop: 6, fontSize: 16, color: 'rgba(255,255,255,0.80)', lineHeight: 1.6 }}>
+                                    我们把每一步“检查什么”都展示出来，约 20 秒，让你能看清楚、也更放心发布。
+                                </div>
+                            </div>
+                            <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.65)', fontWeight: 800 }}>
+                                {Math.max(0, legalAuditProgress[legalAuditModalIndex] || 0)}%
+                            </div>
+                        </div>
+
+                        <div style={{ marginTop: 16 }}>
+                            <Progress
+                                percent={legalAuditProgress[legalAuditModalIndex] || 0}
+                                status="active"
+                                strokeColor={{ from: '#9254de', to: '#00d4aa' }}
+                                trailColor="rgba(255,255,255,0.10)"
+                                strokeWidth={10}
+                            />
+                            <div style={{ marginTop: 10, fontSize: 16, color: 'rgba(255,255,255,0.86)', lineHeight: 1.65 }}>
+                                {getLegalAuditPhaseText(legalAuditProgress[legalAuditModalIndex] || 0)}
+                            </div>
+                        </div>
+
+                        <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                            {getLegalAuditCheckSteps(legalAuditProgress[legalAuditModalIndex] || 0).map((s) => (
+                                <div
+                                    key={s.title}
+                                    style={{
+                                        padding: 12,
+                                        borderRadius: 14,
+                                        border: '1px solid rgba(255,255,255,0.10)',
+                                        background: s.active ? 'rgba(0,212,170,0.10)' : 'rgba(0,0,0,0.18)',
+                                    }}
+                                >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                        {s.done ? (
+                                            <CheckCircleOutlined style={{ color: '#00d4aa', fontSize: 16 }} />
+                                        ) : s.active ? (
+                                            <SyncOutlined spin style={{ color: '#d3adf7', fontSize: 16 }} />
+                                        ) : (
+                                            <RightOutlined style={{ color: 'rgba(255,255,255,0.45)', fontSize: 14 }} />
+                                        )}
+                                        <div style={{ fontSize: 16, fontWeight: 900, color: '#fff' }}>{s.title}</div>
+                                    </div>
+                                    <div style={{ marginTop: 6, fontSize: 14, color: 'rgba(255,255,255,0.70)', lineHeight: 1.55 }}>{s.desc}</div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div style={{ marginTop: 14, fontSize: 12, color: 'rgba(255,255,255,0.55)' }}>
+                            提示：本检查为风险辅助工具，仅供参考；最终以平台审核为准。
+                        </div>
+                    </div>
+                )}
+            </Modal>
             {/* 同步状态验证器 */}
             <div style={{ position: 'absolute', top: 5, right: 10, display: 'flex', alignItems: 'center', gap: 6, opacity: 0.4 }}>
                 <SyncOutlined spin={analyzing} style={{ fontSize: 10, color: '#00d4aa' }} />
@@ -438,8 +636,8 @@ function RewritePanel() {
                                                     }}>
                                                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                                                             <div>
-                                                                <div style={{ fontSize: 16, fontWeight: 900, color: '#d3adf7' }}>🛡️ 一键AI法务检查</div>
-                                                                <div style={{ marginTop: 6, fontSize: 12, color: 'rgba(255,255,255,0.55)' }}>
+                                                                <div style={{ fontSize: 18, fontWeight: 900, color: '#d3adf7' }}>🛡️ 一键AI法务检查</div>
+                                                                <div style={{ marginTop: 6, fontSize: 13, color: 'rgba(255,255,255,0.60)' }}>
                                                                     扫描违禁词/敏感词、导流表达、绝对化用语、常见限流句式，输出替换建议。
                                                                 </div>
                                                             </div>
@@ -468,10 +666,10 @@ function RewritePanel() {
                                                                     strokeColor={{ from: '#9254de', to: '#00d4aa' }}
                                                                     trailColor="rgba(255,255,255,0.08)"
                                                                 />
-                                                                <div style={{ marginTop: 8, fontSize: 13, color: 'rgba(255,255,255,0.70)' }}>
+                                                                <div style={{ marginTop: 8, fontSize: 15, fontWeight: 700, color: 'rgba(255,255,255,0.80)' }}>
                                                                     {getLegalAuditPhaseText(legalAuditProgress[index] || 0)}
                                                                 </div>
-                                                                <div style={{ marginTop: 12, fontSize: 12, color: 'rgba(255,255,255,0.50)' }}>
+                                                                <div style={{ marginTop: 12, fontSize: 13, color: 'rgba(255,255,255,0.60)' }}>
                                                                     <div style={{ fontWeight: 700, marginBottom: 8, color: 'rgba(255,255,255,0.72)' }}>检查依据（来源）：</div>
                                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                                                                         {LEGAL_AUDIT_BASIS.map((item) => (
@@ -524,9 +722,9 @@ function RewritePanel() {
                                                                     </div>
                                                                 )}
 
-                                                                {String(legalAuditReports[index].suggestedText || '').trim() &&
-                                                                    String(legalAuditReports[index].suggestedText || '').trim() !== String(rewrittenResults[index] || '').trim() && (
-                                                                        <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+                                                                {legalAuditReports[index]?.status !== 'pass' && (
+                                                                    <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+                                                                        {String(legalAuditReports[index].suggestedText || '').trim() && (
                                                                             <Button
                                                                                 onClick={() => {
                                                                                     navigator.clipboard.writeText(String(legalAuditReports[index].suggestedText || ''))
@@ -535,24 +733,46 @@ function RewritePanel() {
                                                                             >
                                                                                 复制建议文本
                                                                             </Button>
-                                                                            <Button
-                                                                                type="primary"
-                                                                                onClick={() => applyLegalAuditSuggestion(index)}
-                                                                                style={{
-                                                                                    borderRadius: 12,
-                                                                                    border: 'none',
-                                                                                    fontWeight: 900,
-                                                                                    background: 'linear-gradient(135deg, #9254de, #00d4aa)',
-                                                                                }}
-                                                                            >
-                                                                                一键应用建议
-                                                                            </Button>
-                                                                        </div>
-                                                                    )}
+                                                                        )}
+                                                                        <Button
+                                                                            type="primary"
+                                                                            loading={!!legalOptimizeRunning[index]}
+                                                                            disabled={
+                                                                                (() => {
+                                                                                    const report = legalAuditReports[index]
+                                                                                    const currentText = String(rewrittenResults[index] || '').trim()
+                                                                                    const suggestedText = String(report?.suggestedText || '').trim()
+                                                                                    const hasSuggestionDiff = !!suggestedText && suggestedText !== currentText
+                                                                                    const hasInstances = (report?.instances?.length || 0) > 0
+                                                                                    return !(hasSuggestionDiff || hasInstances)
+                                                                                })()
+                                                                            }
+                                                                            title={
+                                                                                (() => {
+                                                                                    const report = legalAuditReports[index]
+                                                                                    const currentText = String(rewrittenResults[index] || '').trim()
+                                                                                    const suggestedText = String(report?.suggestedText || '').trim()
+                                                                                    const hasSuggestionDiff = !!suggestedText && suggestedText !== currentText
+                                                                                    const hasInstances = (report?.instances?.length || 0) > 0
+                                                                                    return hasSuggestionDiff || hasInstances ? undefined : '暂无可优化的命中内容'
+                                                                                })()
+                                                                            }
+                                                                            onClick={() => applyLegalAuditSuggestion(index)}
+                                                                            style={{
+                                                                                borderRadius: 12,
+                                                                                border: 'none',
+                                                                                fontWeight: 900,
+                                                                                background: 'linear-gradient(135deg, #9254de, #00d4aa)',
+                                                                            }}
+                                                                        >
+                                                                            AI一键优化
+                                                                        </Button>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         ) : (
                                                             <div style={{ marginTop: 12, fontSize: 12, color: 'rgba(255,255,255,0.55)' }}>
-                                                                点击「一键法务」后，将以 10 秒进度条模拟完整合规核验，让你更放心再发布。
+                                                                点击「一键法务」后，将以约 20 秒进度条展示完整合规核验过程，让你能看清每一步在检查什么。
                                                             </div>
                                                         )}
                                                     </div>

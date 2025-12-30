@@ -53,7 +53,7 @@ import { randomUUID } from 'crypto';
 // ==================== 配置 ====================
 var DASHSCOPE_API_URL = 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization';
 var DASHSCOPE_WEBSOCKET_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference';
-var DEFAULT_MODEL = 'cosyvoice-v3-flash'; // 性价比最高
+var DEFAULT_MODEL = 'cosyvoice-v3-flash';
 var VOICE_ENROLLMENT_MODEL = 'voice-enrollment';
 var DEFAULT_TIMEOUT_MS = 60000;
 // ==================== 工具函数 ====================
@@ -65,7 +65,7 @@ function sanitizePrefix(name) {
     return safeTrim(name).replace(/[^a-zA-Z0-9_]/g, '').slice(0, 10) || 'voice';
 }
 function parseVoiceName(voiceId) {
-    // voice_id 格式：cosyvoice-v3-flash-myvoice-xxxxxxxx
+    // voice_id 格式：<model>-<prefix>-<id>，例如 cosyvoice-clone-v1-myvoice-xxxxxxxx
     // 提取用户设置的前缀部分
     var parts = voiceId.split('-');
     if (parts.length >= 4) {
@@ -393,6 +393,12 @@ export function synthesizeSpeech(config, params) {
                     voiceId = safeTrim(params.voiceId);
                     if (!voiceId)
                         throw new Error('voice_id 为空');
+                    if (voiceId === 'cosyvoice-clone-v1' || voiceId.startsWith('cosyvoice-clone-v1-') || voiceId === 'cosyvoice-v3-flash' || voiceId.startsWith('cosyvoice-v3-flash-')) {
+                        throw new Error("\u68C0\u6D4B\u5230\u5386\u53F2\u97F3\u8272\u6A21\u578B\u4E0D\u53D7\u652F\u6301\uFF0C\u5F53\u524D\u4EC5\u652F\u6301 ".concat(DEFAULT_MODEL, "\uFF0C\u8BF7\u4F7F\u7528 ").concat(DEFAULT_MODEL, " \u91CD\u65B0\u590D\u523B\u97F3\u8272\u3002"));
+                    }
+                    if (voiceId.startsWith('cosyvoice-') && !(voiceId === DEFAULT_MODEL || voiceId.startsWith("".concat(DEFAULT_MODEL, "-")))) {
+                        throw new Error("\u5F53\u524D\u4EC5\u652F\u6301 ".concat(DEFAULT_MODEL, "\uFF0C\u8BE5\u97F3\u8272\u53EF\u80FD\u6765\u81EA\u5176\u4ED6\u6A21\u578B\uFF0C\u8BF7\u91CD\u65B0\u590D\u523B\u97F3\u8272\u540E\u518D\u8BD5\u3002"));
+                    }
                     model = config.model || DEFAULT_MODEL;
                     outputDir = path.dirname(params.outputPath);
                     if (!fs.existsSync(outputDir)) {

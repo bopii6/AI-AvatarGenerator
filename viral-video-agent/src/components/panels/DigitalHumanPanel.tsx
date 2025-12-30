@@ -14,18 +14,32 @@ import {
     PlusOutlined,
     ReloadOutlined,
     RocketOutlined,
+    StopOutlined,
     UserOutlined,
     PlayCircleOutlined,
     SoundOutlined,
+    ClockCircleOutlined,
     CheckCircleFilled,
     VideoCameraOutlined,
     DeleteOutlined,
     AudioOutlined,
     FileTextOutlined,
 } from '@ant-design/icons'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
 import CloudServiceStatus from '../CloudServiceStatus'
+import { toMediaUrl } from '../../utils/mediaUrl'
+import DigitalHumanCommunityPanel from '../digitalHuman/DigitalHumanCommunityPanel'
+import {
+    addDigitalHumanCommunityVideo,
+    clearDigitalHumanCommunity,
+    loadDigitalHumanCommunity,
+    moveDigitalHumanCommunityVideo,
+    removeDigitalHumanCommunityVideo,
+    updateDigitalHumanCommunityVideo,
+    type DigitalHumanCommunityVideo,
+} from '../../services/digitalHumanCommunity'
+import { auditLog } from '../../services/auditLog'
 
 interface AvatarModel {
     id: string
@@ -140,6 +154,8 @@ function DigitalHumanPanel() {
         digitalHumanDownloadText,
         setDigitalHumanDownloading,
         setDigitalHumanDownloadProgress,
+        digitalHumanSynthesisResult,
+        setDigitalHumanSynthesisResult,
     } = useAppStore()
 
     // 状态
@@ -154,11 +170,159 @@ function DigitalHumanPanel() {
 
     const [isSavingToDesktop, setIsSavingToDesktop] = useState(false)
 
+    const [audioPreviewOpen, setAudioPreviewOpen] = useState(false)
+    const [audioPreviewSrc, setAudioPreviewSrc] = useState('')
+    const [audioPreviewName, setAudioPreviewName] = useState('')
+
+    const [generatingModalOpen, setGeneratingModalOpen] = useState(false)
+    const [generatingModalDismissed, setGeneratingModalDismissed] = useState(false)
+    const [generatingTipIndex, setGeneratingTipIndex] = useState(0)
+    const [generatingElapsedMs, setGeneratingElapsedMs] = useState(0)
+
+    const generatingStartAtRef = useRef<number>(0)
+    const generatingElapsedTimerRef = useRef<number | null>(null)
+    const generatingTipTimerRef = useRef<number | null>(null)
+    const fakeProgressTimerRef = useRef<number | null>(null)
+    const [communityItems, setCommunityItems] = useState<DigitalHumanCommunityVideo[]>(() => loadDigitalHumanCommunity())
+
+    const confirmLegalUse = useCallback(async (actionLabel: string) => {
+        const ok = await new Promise<boolean>((resolve) => {
+            Modal.confirm({
+                title: `合规确认（${actionLabel}）`,
+                content: (
+                    <div style={{ lineHeight: 1.7 }}>
+                        <div>请确认你对所使用的形象视频/音频/文本已获得必要授权（肖像、声音、隐私与个人信息处理、著作权等）。</div>
+                        <div>严禁用于冒充他人、诈骗、侵权、骚扰或任何违法用途。</div>
+                        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>提示：你的确认与关键操作会被记录为审计日志，用于合规留证。</div>
+                    </div>
+                ),
+                okText: '我已获得授权并承诺合法使用',
+                cancelText: '取消',
+                onOk: () => resolve(true),
+                onCancel: () => resolve(false),
+            })
+        })
+        if (ok) await auditLog('user_legal_confirm', { action: actionLabel })
+        return ok
+    }, [])
+
+    // cloud-gpu 进度事件在 src/App.tsx 统一监听并写入 Zustand，避免切页/弹窗导致监听丢失
+
+    const GENERATING_TIPS = useMemo(() => [
+        '合成耗时通常 5–20 分钟，取决于排队与素材复杂度。',
+        '请不要关闭应用/断网/休眠电脑，避免任务中断。',
+        '建议：先检查逐字稿是否包含站外引流（微信/手机号/二维码）等敏感信息。',
+        '建议：避免“最/第一/100%/稳赚不赔”等绝对化或收益承诺词，容易触发平台风控。',
+        '法律与合规提示：请确保你拥有肖像、声音、作品的授权；因违规造成的法律风险由使用者自行承担。',
+        '严禁用于诈骗、虚假身份冒充、造谣诽谤、侵犯他人权益等违法用途。',
+        '建议：如涉及医疗/金融/教育等领域，请避免夸大疗效、收益承诺与误导性表达。',
+        '你可以同时准备：标题、话题标签、封面文案，让出片后直接发布。',
+        '如果音频过长或噪声较大，会显著拉长合成时间；建议先做 10–30 秒小样测试。',
+        '生成过程中进度可能会卡住一段时间，这是正常的队列/渲染阶段，请耐心等待。',
+    ], [])
+
+    const formatDuration = useCallback((ms: number) => {
+        const total = Math.max(0, Math.floor(ms / 1000))
+        const m = Math.floor(total / 60)
+        const s = total % 60
+        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    }, [])
+
+    const estimateRemainingMs = useCallback((elapsedMs: number, percent: number) => {
+        if (!percent || percent <= 0 || percent >= 100) return null
+        const total = elapsedMs / (percent / 100)
+        const remaining = Math.max(0, Math.floor(total - elapsedMs))
+        if (!Number.isFinite(remaining) || remaining <= 0) return null
+        return remaining
+    }, [])
+
+    const startFakeSynthesisProgress = useCallback(() => {
+        if (fakeProgressTimerRef.current) {
+            window.clearInterval(fakeProgressTimerRef.current)
+            fakeProgressTimerRef.current = null
+        }
+
+        const startedAt = Date.now()
+        fakeProgressTimerRef.current = window.setInterval(() => {
+            const state = useAppStore.getState()
+            if (!state.digitalHumanGenerating) return
+
+            const base = Math.max(0, state.digitalHumanProgress || 0)
+            if (base >= 95) return
+
+            const elapsedSec = Math.max(0, (Date.now() - startedAt) / 1000)
+            const tau = 180
+            const eased = 1 - Math.exp(-elapsedSec / tau)
+            const simulated = Math.min(95, Math.floor(5 + eased * 90))
+            const next = Math.max(base, simulated)
+            if (next <= base) return
+
+            const stageText =
+                next < 15 ? '排队中：正在等待算力资源...' :
+                    next < 35 ? '解析音频：提取节奏与发音特征...' :
+                        next < 55 ? '驱动口型：正在对齐唇形与表情...' :
+                            next < 75 ? '渲染画面：逐帧合成中...' :
+                                next < 90 ? '合成视频：拼接与编码中...' :
+                                    '收尾处理：即将完成...'
+
+            const keepText = String(state.digitalHumanProgressText || '').trim()
+            state.setDigitalHumanProgress(next, keepText || stageText)
+        }, 1000)
+    }, [])
+
+    const stopFakeSynthesisProgress = useCallback(() => {
+        if (fakeProgressTimerRef.current) {
+            window.clearInterval(fakeProgressTimerRef.current)
+            fakeProgressTimerRef.current = null
+        }
+    }, [])
+
+    useEffect(() => {
+        if (!digitalHumanGenerating) {
+            setGeneratingModalOpen(false)
+            setGeneratingModalDismissed(false)
+            setGeneratingElapsedMs(0)
+            generatingStartAtRef.current = 0
+            stopFakeSynthesisProgress()
+
+            if (generatingElapsedTimerRef.current) {
+                window.clearInterval(generatingElapsedTimerRef.current)
+                generatingElapsedTimerRef.current = null
+            }
+            if (generatingTipTimerRef.current) {
+                window.clearInterval(generatingTipTimerRef.current)
+                generatingTipTimerRef.current = null
+            }
+            return
+        }
+
+        setGeneratingModalDismissed(false)
+        setGeneratingModalOpen(true)
+        generatingStartAtRef.current = Date.now()
+        setGeneratingElapsedMs(0)
+        setGeneratingTipIndex(0)
+
+        generatingElapsedTimerRef.current = window.setInterval(() => {
+            setGeneratingElapsedMs(Date.now() - generatingStartAtRef.current)
+        }, 1000)
+
+        generatingTipTimerRef.current = window.setInterval(() => {
+            setGeneratingTipIndex((v) => (v + 1) % GENERATING_TIPS.length)
+        }, 6500)
+
+        return () => {
+            if (generatingElapsedTimerRef.current) {
+                window.clearInterval(generatingElapsedTimerRef.current)
+                generatingElapsedTimerRef.current = null
+            }
+            if (generatingTipTimerRef.current) {
+                window.clearInterval(generatingTipTimerRef.current)
+                generatingTipTimerRef.current = null
+            }
+        }
+    }, [GENERATING_TIPS.length, digitalHumanGenerating, stopFakeSynthesisProgress])
+
     // 分阶段状态：合成完成后显示下载按钮
-    const [synthesisResult, setSynthesisResult] = useState<{
-        remoteVideoPath: string
-        tempAudioPath?: string
-    } | null>(null)
     // 当前步骤
     const selectedAvatar = avatars.find(a => a.id === selectedAvatarId)
     const hasAvatar = !!selectedAvatar
@@ -205,6 +369,57 @@ function DigitalHumanPanel() {
     const textToSpeak = (digitalHumanSelectedCopy?.copy || rewrittenCopy || originalCopy || '').trim()
     const hasText = textToSpeak.length > 0
     const readyForVideo = transcriptConfirmed && hasAudio
+
+    useEffect(() => {
+        setCommunityItems(loadDigitalHumanCommunity())
+    }, [])
+
+    useEffect(() => {
+        const sourcePath = (digitalHumanVideoPath || '').trim()
+        if (!sourcePath) return
+
+        const titleBase = (digitalHumanSelectedCopy?.title || '').trim() || '数字人口播作品'
+        const avatarName = (selectedAvatar?.name || '').trim() || undefined
+        const createdAt = new Date().toISOString()
+
+        const maybeUuid = (globalThis.crypto as any)?.randomUUID?.()
+        const id = typeof maybeUuid === 'string' && maybeUuid ? maybeUuid : `${Date.now()}_${Math.random().toString(16).slice(2)}`
+
+        const upsert = (videoPath: string) => {
+            const item: DigitalHumanCommunityVideo = {
+                id,
+                title: titleBase,
+                avatarName,
+                createdAt,
+                sourcePath,
+                videoPath,
+            }
+            const next = addDigitalHumanCommunityVideo(item)
+            setCommunityItems(next)
+        }
+
+            ; (async () => {
+                try {
+                    const items = loadDigitalHumanCommunity()
+                    const exists = items.some((it) => it.sourcePath === sourcePath || it.videoPath === sourcePath)
+                    if (exists) return
+
+                    if (window.electronAPI?.invoke) {
+                        const res = await window.electronAPI.invoke('save-to-community', {
+                            sourcePath,
+                            title: titleBase,
+                        })
+                        const destPath = (res?.success && res?.data?.destPath) ? String(res.data.destPath) : ''
+                        upsert(destPath || sourcePath)
+                        return
+                    }
+
+                    upsert(sourcePath)
+                } catch {
+                    upsert(sourcePath)
+                }
+            })()
+    }, [digitalHumanVideoPath, digitalHumanSelectedCopy?.title, selectedAvatar?.name])
 
     useEffect(() => {
         if (transcriptCandidates.length === 0) return
@@ -273,6 +488,7 @@ function DigitalHumanPanel() {
             message.warning('请输入形象名称并选择视频')
             return
         }
+        if (!(await confirmLegalUse('保存形象'))) return
 
         setIsSavingAvatar(true)
         try {
@@ -331,6 +547,24 @@ function DigitalHumanPanel() {
         throw new Error(result?.error || '生成失败')
     }, [setDigitalHumanVideoPath, setFinalVideoPath, setPreview])
 
+    const ensureAudioDurationValid = useCallback(async (): Promise<boolean> => {
+        if (!window.electronAPI?.invoke) return true
+        const ap = (audioPath || '').trim()
+        if (!ap) return false
+        try {
+            const res = await window.electronAPI.invoke('get-video-duration', ap)
+            const duration = res?.success ? Number(res.data) : NaN
+            if (!Number.isFinite(duration) || duration <= 0.1) {
+                message.error('音频无效或时长为 0，请重新生成音频后再试')
+                return false
+            }
+            return true
+        } catch {
+            message.error('无法读取音频时长，请重新生成音频后再试')
+            return false
+        }
+    }, [audioPath])
+
     // 第一阶段：仅合成（不下载）
     const handleSynthesizeOnly = async () => {
         if (digitalHumanGenerating) {
@@ -349,16 +583,19 @@ function DigitalHumanPanel() {
             message.warning('请先编辑逐字稿并点击「确认用于出片」')
             return
         }
+        if (!(await ensureAudioDurationValid())) return
+        if (!(await confirmLegalUse('数字人合成'))) return
 
         setDigitalHumanGenerating(true)
         setDigitalHumanProgress(0, '准备数字人服务...')
-        setSynthesisResult(null)  // 清空之前的合成结果
+        setDigitalHumanSynthesisResult(null)  // 清空之前的合成结果
 
         try {
             const ready = await ensureCloudGpuReady()
             if (!ready) return
 
             setDigitalHumanProgress(5, '正在提交合成任务...')
+            startFakeSynthesisProgress()
             const result = await window.electronAPI?.invoke('cloud-gpu-synthesize-only', {
                 avatarVideoPath: selectedAvatar.remoteVideoPath,
                 audioPath,
@@ -366,9 +603,15 @@ function DigitalHumanPanel() {
 
             console.log('[DigitalHumanPanel] Synthesis result:', JSON.stringify(result, null, 2))
 
+            if (result?.canceled) {
+                setDigitalHumanProgress(0, '已取消合成')
+                message.info(result?.error || '已取消合成')
+                return
+            }
+
             if (result?.success && result.data?.remoteVideoPath) {
                 console.log('[DigitalHumanPanel] Setting synthesisResult:', result.data.remoteVideoPath)
-                setSynthesisResult({
+                setDigitalHumanSynthesisResult({
                     remoteVideoPath: result.data.remoteVideoPath,
                     tempAudioPath: result.data.tempAudioPath,
                 })
@@ -379,15 +622,21 @@ function DigitalHumanPanel() {
             }
         } catch (e: any) {
             console.error('[DigitalHumanPanel] Synthesis error:', e)
-            message.error(e.message)
+            const msg = String(e?.message || e)
+            if (msg.toLowerCase().includes('float division by zero')) {
+                message.error('数字人服务处理失败：可能音频时长为 0 或音频不完整，请重新生成音频后重试')
+            } else {
+                message.error(msg)
+            }
         } finally {
+            stopFakeSynthesisProgress()
             setDigitalHumanGenerating(false)
         }
     }
 
     // 第二阶段：下载已合成的视频
     const handleDownloadVideo = async () => {
-        if (!synthesisResult?.remoteVideoPath) {
+        if (!digitalHumanSynthesisResult?.remoteVideoPath) {
             message.warning('请先完成视频合成')
             return
         }
@@ -401,15 +650,21 @@ function DigitalHumanPanel() {
 
         try {
             const result = await window.electronAPI?.invoke('cloud-gpu-download-video', {
-                remoteVideoPath: synthesisResult.remoteVideoPath,
-                tempAudioPath: synthesisResult.tempAudioPath,
+                remoteVideoPath: digitalHumanSynthesisResult.remoteVideoPath,
+                tempAudioPath: digitalHumanSynthesisResult.tempAudioPath,
             })
+
+            if (result?.canceled) {
+                setDigitalHumanDownloadProgress(0, '已取消下载')
+                message.info(result?.error || '已取消下载')
+                return
+            }
 
             if (result?.success && result.data?.videoPath) {
                 setDigitalHumanVideoPath(result.data.videoPath)
                 setFinalVideoPath(result.data.videoPath)
                 setPreview('video', result.data.videoPath)
-                setSynthesisResult(null)  // 清空合成结果
+                setDigitalHumanSynthesisResult(null)  // 清空合成结果
                 setDigitalHumanDownloadProgress(100, '✅ 下载完成！')
                 message.success('视频下载完成！')
             } else {
@@ -419,6 +674,27 @@ function DigitalHumanPanel() {
             message.error(e.message)
         } finally {
             setDigitalHumanDownloading(false)
+        }
+    }
+
+    const handleCancelSynthesis = async () => {
+        if (!digitalHumanGenerating) return
+        try {
+            await window.electronAPI?.invoke('cloud-gpu-cancel-synthesis')
+        } finally {
+            stopFakeSynthesisProgress()
+            setDigitalHumanGenerating(false)
+            setDigitalHumanProgress(0, '已取消合成')
+        }
+    }
+
+    const handleCancelDownload = async () => {
+        if (!digitalHumanDownloading) return
+        try {
+            await window.electronAPI?.invoke('cloud-gpu-cancel-download')
+        } finally {
+            setDigitalHumanDownloading(false)
+            setDigitalHumanDownloadProgress(0, '已取消下载')
         }
     }
 
@@ -440,6 +716,8 @@ function DigitalHumanPanel() {
             message.warning('请先编辑逐字稿并点击「确认用于出片」')
             return
         }
+        if (!(await ensureAudioDurationValid())) return
+        if (!(await confirmLegalUse('数字人生成'))) return
 
         setDigitalHumanGenerating(true)
         setDigitalHumanProgress(0, '准备数字人服务...')
@@ -492,7 +770,7 @@ function DigitalHumanPanel() {
                 marginBottom: 20,
                 border: '1px solid rgba(22,119,255,0.15)',
             }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
                     <div>
                         <div style={{
                             fontSize: 22,
@@ -508,7 +786,38 @@ function DigitalHumanPanel() {
                             确认逐字稿 → 准备音频 → 一键生成口播视频
                         </Typography.Text>
                     </div>
-                    <CloudServiceStatus kind="gpu" />
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 12 }}>
+                        <CloudServiceStatus kind="gpu" />
+                        <DigitalHumanCommunityPanel
+                            items={communityItems}
+                            onPlayPath={(videoPath) => setPreview('video', videoPath)}
+                            onDelete={(id) => {
+                                const next = removeDigitalHumanCommunityVideo(id)
+                                setCommunityItems(next)
+                            }}
+                            onUpdate={(id, patch) => {
+                                const next = updateDigitalHumanCommunityVideo(id, patch)
+                                setCommunityItems(next)
+                            }}
+                            onMove={(id, direction) => {
+                                const next = moveDigitalHumanCommunityVideo(id, direction)
+                                setCommunityItems(next)
+                            }}
+                            onClear={() => {
+                                Modal.confirm({
+                                    title: '清空社区作品？',
+                                    content: '清空后不可恢复（不会删除你电脑上的原视频文件，只是移除列表）。',
+                                    okText: '清空',
+                                    cancelText: '取消',
+                                    okButtonProps: { danger: true },
+                                    onOk: async () => {
+                                        clearDigitalHumanCommunity()
+                                        setCommunityItems([])
+                                    },
+                                })
+                            }}
+                        />
+                    </div>
                 </div>
             </div>
 
@@ -730,7 +1039,11 @@ function DigitalHumanPanel() {
                                     <Button
                                         size="small"
                                         icon={<PlayCircleOutlined />}
-                                        onClick={() => setPreview('audio', audioPath)}
+                                        onClick={() => {
+                                            setAudioPreviewSrc(toMediaUrl(audioPath))
+                                            setAudioPreviewName(getBasename(audioPath))
+                                            setAudioPreviewOpen(true)
+                                        }}
                                     >
                                         试听
                                     </Button>
@@ -940,7 +1253,7 @@ function DigitalHumanPanel() {
                                         }}>
                                             {avatar.localPreviewPath ? (
                                                 <video
-                                                    src={`file://${avatar.localPreviewPath}`}
+                                                    src={toMediaUrl(avatar.localPreviewPath)}
                                                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                                                     muted
                                                 />
@@ -990,6 +1303,8 @@ function DigitalHumanPanel() {
                         )}
                     </Card>
 
+
+
                     {/* 第三步：生成视频 */}
                     <Card
                         style={{
@@ -1025,6 +1340,23 @@ function DigitalHumanPanel() {
                                 <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.65)' }}>
                                     {digitalHumanProgressText}
                                 </div>
+                                <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                                    {!generatingModalOpen && (
+                                        <Button
+                                            size="small"
+                                            icon={<ClockCircleOutlined />}
+                                            onClick={() => {
+                                                setGeneratingModalDismissed(false)
+                                                setGeneratingModalOpen(true)
+                                            }}
+                                        >
+                                            查看合成进度弹窗
+                                        </Button>
+                                    )}
+                                    <Button danger size="small" icon={<StopOutlined />} onClick={handleCancelSynthesis}>
+                                        取消合成
+                                    </Button>
+                                </div>
                             </div>
                         )}
 
@@ -1043,11 +1375,16 @@ function DigitalHumanPanel() {
                                 <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.65)' }}>
                                     {digitalHumanDownloadText}
                                 </div>
+                                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 10 }}>
+                                    <Button danger size="small" icon={<StopOutlined />} onClick={handleCancelDownload}>
+                                        取消下载
+                                    </Button>
+                                </div>
                             </div>
                         )}
 
                         {/* 合成完成提示 + 下载按钮 */}
-                        {synthesisResult && !digitalHumanGenerating && !digitalHumanDownloading && (
+                        {digitalHumanSynthesisResult && !digitalHumanGenerating && !digitalHumanDownloading && (
                             <div style={{
                                 marginBottom: 16,
                                 padding: 16,
@@ -1082,7 +1419,7 @@ function DigitalHumanPanel() {
                         )}
 
                         {/* 合成按钮 - 仅当没有合成结果时显示 */}
-                        {!synthesisResult && (
+                        {!digitalHumanSynthesisResult && (
                             <Button
                                 type="primary"
                                 size="large"
@@ -1161,6 +1498,156 @@ function DigitalHumanPanel() {
                 </div>
             </div>
 
+            {/* 音频试听弹窗（数字人步骤不显示右侧预览区，故在此处直接提供播放器） */}
+            <Modal
+                title={
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <SoundOutlined style={{ color: '#722ed1' }} />
+                        试听音频
+                    </div>
+                }
+                open={audioPreviewOpen}
+                onCancel={() => setAudioPreviewOpen(false)}
+                footer={null}
+                width={520}
+            >
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <Typography.Text style={{ fontWeight: 600 }} ellipsis={{ tooltip: audioPreviewName }}>
+                            {audioPreviewName || '音频'}
+                        </Typography.Text>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: audioPreviewSrc }}>
+                            {audioPreviewSrc}
+                        </Typography.Text>
+                    </div>
+                    <audio
+                        src={audioPreviewSrc}
+                        controls
+                        autoPlay
+                        style={{ width: '100%' }}
+                        onError={() => message.error('音频播放失败：请确认文件存在且格式可播放')}
+                    />
+                </Space>
+            </Modal>
+
+            {/* 合成进度弹窗 */}
+            <Modal
+                title={
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <ClockCircleOutlined style={{ color: '#1677ff' }} />
+                        合成中，请稍候
+                    </div>
+                }
+                open={digitalHumanGenerating && generatingModalOpen}
+                onCancel={() => {
+                    setGeneratingModalOpen(false)
+                    setGeneratingModalDismissed(true)
+                }}
+                closable={false}
+                keyboard={false}
+                maskClosable={false}
+                width={640}
+                footer={
+                    <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            已用时 {formatDuration(generatingElapsedMs)}
+                            {(() => {
+                                const remain = estimateRemainingMs(generatingElapsedMs, digitalHumanProgress)
+                                if (!remain) return null
+                                return ` · 预计剩余 ${formatDuration(remain)}`
+                            })()}
+                        </Typography.Text>
+                        <Button
+                            onClick={() => {
+                                setGeneratingModalOpen(false)
+                                setGeneratingModalDismissed(true)
+                            }}
+                        >
+                            放到后台继续
+                        </Button>
+                    </Space>
+                }
+            >
+                <style>{`
+                    @keyframes dh-rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+                    @keyframes dh-pulse { 0% { transform: scale(1); opacity: .75; } 50% { transform: scale(1.08); opacity: 1; } 100% { transform: scale(1); opacity: .75; } }
+                    .dh-clock {
+                        width: 44px; height: 44px; border-radius: 50%;
+                        border: 2px solid rgba(22,119,255,.55);
+                        position: relative;
+                        box-shadow: 0 0 0 6px rgba(22,119,255,.08);
+                        animation: dh-pulse 1.8s ease-in-out infinite;
+                        flex: 0 0 auto;
+                    }
+                    .dh-clock::before{
+                        content:'';
+                        position:absolute;
+                        left:50%; top:50%;
+                        width: 2px; height: 14px;
+                        background: linear-gradient(#1677ff, #722ed1);
+                        transform-origin: 50% 100%;
+                        transform: translate(-50%,-100%) rotate(0deg);
+                        animation: dh-rotate 2.2s linear infinite;
+                        border-radius: 2px;
+                    }
+                    .dh-clock::after{
+                        content:'';
+                        position:absolute;
+                        left:50%; top:50%;
+                        width: 6px; height: 6px;
+                        background: rgba(255,255,255,.85);
+                        transform: translate(-50%,-50%);
+                        border-radius: 50%;
+                        box-shadow: 0 0 0 3px rgba(114,46,209,.12);
+                    }
+                `}</style>
+
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                        <div className="dh-clock" aria-hidden="true" />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <Progress
+                                percent={Math.max(0, Math.min(100, Math.floor(digitalHumanProgress)))}
+                                status="active"
+                                strokeColor={{
+                                    '0%': '#1677ff',
+                                    '100%': '#722ed1',
+                                }}
+                                style={{ marginBottom: 6 }}
+                            />
+                            <Typography.Text style={{ color: 'rgba(255,255,255,0.78)' }}>
+                                {digitalHumanProgressText || '正在处理...请稍候'}
+                            </Typography.Text>
+                        </div>
+                    </div>
+
+                    <div style={{
+                        padding: 14,
+                        borderRadius: 12,
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        background: 'rgba(255,255,255,0.03)',
+                    }}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+                            期间提示
+                        </Typography.Text>
+                        <Typography.Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 14 }}>
+                            {GENERATING_TIPS[generatingTipIndex]}
+                        </Typography.Text>
+                    </div>
+
+                    <div style={{
+                        padding: 12,
+                        borderRadius: 12,
+                        background: 'rgba(250,173,20,0.08)',
+                        border: '1px solid rgba(250,173,20,0.22)',
+                    }}>
+                        <Typography.Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 13 }}>
+                            合规提醒：请勿生成违法违规内容；请确保肖像/声音/素材授权；发布前建议再人工复核一次文案与画面。
+                        </Typography.Text>
+                    </div>
+                </Space>
+            </Modal>
+
             {/* 创建形象弹窗 */}
             <Modal
                 title={
@@ -1201,12 +1688,23 @@ function DigitalHumanPanel() {
                             disabled={isSavingAvatar}
                         >
                             <Button
-                                icon={<UploadOutlined />}
                                 size="large"
                                 block
                                 style={{ height: 48 }}
                             >
-                                {newAvatarFile ? newAvatarFile.name : '选择视频文件'}
+                                <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                    <UploadOutlined />
+                                    {newAvatarFile ? (
+                                        <Typography.Text
+                                            style={{ flex: 1, minWidth: 0 }}
+                                            ellipsis={{ tooltip: newAvatarFile.name }}
+                                        >
+                                            {newAvatarFile.name}
+                                        </Typography.Text>
+                                    ) : (
+                                        <span style={{ flex: 1, minWidth: 0 }}>选择视频文件</span>
+                                    )}
+                                </span>
                             </Button>
                         </Upload>
                         <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>

@@ -92,7 +92,7 @@ export default function ApiKeySettings() {
                 onFinish={onFinish}
                 initialValues={{
                     ALIYUN_COSYVOICE_MODEL: 'cosyvoice-v3-flash',
-                    ALIYUN_COSYVOICE_FALLBACK_MODELS: 'cosyvoice-clone-v1,cosyvoice-v3-plus',
+                    ALIYUN_COSYVOICE_FALLBACK_MODELS: 'cosyvoice-v3-flash',
                 }}
             >
                 <Card
@@ -109,7 +109,7 @@ export default function ApiKeySettings() {
                         <Input.Password placeholder="sk-..." />
                     </Form.Item>
 
-                    <Form.Item label="主模型" name="ALIYUN_COSYVOICE_MODEL" extra="性价比优先选 flash">
+                    <Form.Item label="主模型" name="ALIYUN_COSYVOICE_MODEL" extra="当前推荐统一用 v3-flash">
                         <Select options={MODEL_OPTIONS} />
                     </Form.Item>
 
@@ -118,7 +118,7 @@ export default function ApiKeySettings() {
                         name="ALIYUN_COSYVOICE_FALLBACK_MODELS"
                         extra="逗号分隔，按优先级排序。主模型额度耗尽时自动切换"
                     >
-                        <Input placeholder="cosyvoice-clone-v1,cosyvoice-v3-plus" />
+                        <Input placeholder="cosyvoice-v3-flash" />
                     </Form.Item>
 
                     <Space style={{ width: '100%' }} direction="vertical">

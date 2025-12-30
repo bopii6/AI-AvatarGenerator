@@ -34,4 +34,3 @@ curl -F "audio=@/etc/hosts;filename=audio_test.wav" "http://127.0.0.1:8383/uploa
 
 ## 服务器回收后的恢复
 见：`scripts/deploy/RECOVERY_SOP.md`
-

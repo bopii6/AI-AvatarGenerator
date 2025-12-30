@@ -25,6 +25,22 @@ export default defineConfig({
             // 排除 HD_HUMAN 文件夹，避免 Gradio 依赖错误
             deny: ['**/HD_HUMAN/**'],
         },
+        ...(String(process.env.VITE_APP_MODE || '').toLowerCase() === 'web'
+            ? {
+                  proxy: {
+                      // Web 版：把前端的 /api 和 /ws 代理到本地后端
+                      '/api': {
+                          target: 'http://127.0.0.1:8787',
+                          changeOrigin: true,
+                      },
+                      '/ws': {
+                          target: 'ws://127.0.0.1:8787',
+                          ws: true,
+                          changeOrigin: true,
+                      },
+                  },
+              }
+            : {}),
     },
     // 排除 HD_HUMAN 文件夹
     optimizeDeps: {

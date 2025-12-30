@@ -51,5 +51,6 @@ scripts/deploy/cosyvoice/CosyVoice.tar.gz
 
 # Electron build artifacts
 dist-electron/
+dist-web-server/
 release/
 public/

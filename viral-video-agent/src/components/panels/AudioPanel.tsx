@@ -3,15 +3,10 @@ import { SoundOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
 import CloudServiceStatus from '../CloudServiceStatus'
+import { toMediaUrl } from '../../utils/mediaUrl'
 
 function toFileUrl(filePath: string): string {
-    if (filePath.startsWith('file://')) filePath = filePath.slice(7)
-    const normalizedPath = filePath.replace(/\\/g, '/')
-    const encoded = normalizedPath
-        .split('/')
-        .map(segment => encodeURIComponent(segment))
-        .join('/')
-    return `file:///${encoded.replace(/^\/+/, '')}`
+    return toMediaUrl(filePath)
 }
 
 type VoiceModel = { id: string; name: string; status: string }
@@ -58,19 +53,27 @@ export default function AudioPanel() {
                     if (raw) aliases = JSON.parse(raw) || {}
                 } catch { /* ignore */ }
 
+                const toTime = (m: any) => {
+                    const raw = m?.updatedAt || m?.createdAt
+                    const t = raw ? Date.parse(String(raw)) : NaN
+                    return Number.isFinite(t) ? t : 0
+                }
+
                 setModels(
-                    res.data.map((m: VoiceModel) => ({
-                        ...m,
-                        name: (() => {
-                            const id = (m.id || '').trim()
-                            const baseName = (id && aliases[id]) ? String(aliases[id]) : m.name
-                            if (!id) return baseName
-                            const lastSeg = id.split('-').pop() || ''
-                            const short = lastSeg.slice(0, 6) || id.slice(-6)
-                            if (!short) return baseName
-                            return baseName.includes(short) ? baseName : `${baseName} (${short})`
-                        })(),
-                    }))
+                    (res.data as any[])
+                        .map((m: any) => ({
+                            ...m,
+                            name: (() => {
+                                const id = String(m.id || '').trim()
+                                const baseName = (id && aliases[id]) ? String(aliases[id]) : String(m.name || '')
+                                if (!id) return baseName
+                                const lastSeg = id.split('-').pop() || ''
+                                const short = lastSeg.slice(0, 6) || id.slice(-6)
+                                if (!short) return baseName
+                                return baseName.includes(short) ? baseName : `${baseName} (${short})`
+                            })(),
+                        }))
+                        .sort((a, b) => toTime(b) - toTime(a))
                 )
                 return
             }
@@ -150,6 +153,11 @@ export default function AudioPanel() {
                                 style={{ width: 320 }}
                                 size="large"
                                 placeholder="请选择音色"
+                                showSearch
+                                optionFilterProp="label"
+                                filterOption={(input, option) =>
+                                    String(option?.label || '').toLowerCase().includes(String(input || '').toLowerCase())
+                                }
                                 disabled={readyModels.length === 0}
                             />
                             <Button icon={<ReloadOutlined />} onClick={loadModels}>
