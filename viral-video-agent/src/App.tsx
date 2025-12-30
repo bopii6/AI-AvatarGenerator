@@ -1235,7 +1235,6 @@ function App() {
 
         const disabledReason = (() => {
             if (autoRunning) return '流程运行中'
-            if (!urlTrimmed) return '请先粘贴短视频链接'
             if (autoCheckLoading) return '正在检测服务'
             if (!autoVoiceReady) return '音色未就绪（请先克隆/选择）'
             if (!autoAvatarReady) return '形象未就绪（请先创建）'
@@ -1730,16 +1729,17 @@ function App() {
                     />
                 </div>
 
-                {/* 中间：Logo + 产品名称 */}
-                <div className="header-title" style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <img src="/icon.ico" alt="logo" style={{ width: 40, height: 40, borderRadius: 8 }} />
-                    <div style={{ textAlign: 'center' }}>
-                        <div className="brand-name" style={{ fontSize: 24, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
-                            360行 AI智能体大脑
+                {/* 中间：产品名称 - 高端设计 */}
+                <div className="header-title" style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 16 }}>
+                    <div className="header-brand-container">
+                        {/* 主标题 - 渐变发光效果 */}
+                        <div className="header-brand-main">
+                            <span className="header-brand-360">360行</span>
+                            <span className="header-brand-ai">AI数字获客系统</span>
                             <Tooltip title="点击检查更新">
                                 <span
+                                    className="header-version-badge"
                                     title={`build: ${__BUILD_TIME__}`}
-                                    style={{ fontSize: 10, backgroundColor: 'rgba(0, 212, 170, 0.1)', color: '#00d4aa', padding: '2px 8px', borderRadius: 4, border: '1px solid rgba(0, 212, 170, 0.3)', verticalAlign: 'middle', fontWeight: 400, cursor: 'pointer' }}
                                     onClick={async () => {
                                         const hide = message.loading('正在检查更新...', 0)
                                         try {
@@ -1772,7 +1772,8 @@ function App() {
                                 </span>
                             </Tooltip>
                         </div>
-                        <div className="brand-subtitle" style={{ fontSize: 12, opacity: 0.7 }}>一键生成 · 全网分发 · 躺赚流量</div>
+                        {/* 副标题 */}
+                        <div className="header-brand-subtitle">一键生成 · 全网分发 · 躺赚流量</div>
                     </div>
                 </div>
                 <div className="header-actions" style={{ position: 'absolute', right: 28, top: '50%', transform: 'translateY(-50%)' }}>
@@ -1906,8 +1907,8 @@ function App() {
                             </div>
                         </>
                     ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
-                            {/* 左侧显示全部7个步骤 - 撑满整个边栏 */}
+                        <div className="auto-steps-marquee-container" style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
+                            {/* 左侧显示全部7个步骤 - 带跑马灯动画 */}
                             {autoSteps.map((item, idx) => {
                                 const isActive = autoActiveIndex === idx
                                 const isDone = item.done
@@ -1915,7 +1916,7 @@ function App() {
                                     <div
                                         key={item.key}
                                         onClick={() => setAutoActiveStep(item.key)}
-                                        className={isActive ? 'active-step-marquee' : ''}
+                                        className={`auto-step-card ${isActive ? 'active' : ''}`}
                                         style={{
                                             padding: '16px 16px',
                                             borderRadius: 12,
@@ -1925,15 +1926,21 @@ function App() {
                                             flexDirection: 'column',
                                             justifyContent: 'center',
                                             background: isActive
-                                                ? 'linear-gradient(135deg, rgba(0,212,170,0.18), rgba(146,84,222,0.10))'
+                                                ? 'linear-gradient(135deg, rgba(0,212,170,0.15), rgba(146,84,222,0.08))'
                                                 : 'rgba(255, 255, 255, 0.025)',
-                                            border: isActive
-                                                ? '1.5px solid rgba(0,212,170,0.5)'
-                                                : '1px solid rgba(255, 255, 255, 0.08)',
+                                            border: '1px solid rgba(255, 255, 255, 0.08)',
                                             transition: 'all 0.2s ease',
+                                            position: 'relative',
+                                            overflow: 'hidden'
                                         }}
                                     >
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                        {/* 跑马灯边框元素 */}
+                                        <div className="step-border-top"></div>
+                                        <div className="step-border-right"></div>
+                                        <div className="step-border-bottom"></div>
+                                        <div className="step-border-left"></div>
+
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, position: 'relative', zIndex: 1 }}>
                                             <span style={{
                                                 display: 'inline-flex',
                                                 alignItems: 'center',

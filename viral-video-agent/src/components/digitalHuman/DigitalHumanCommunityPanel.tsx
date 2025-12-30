@@ -1,8 +1,10 @@
-import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, ExpandOutlined, PlayCircleOutlined, TagsOutlined } from '@ant-design/icons'
+import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, ExpandOutlined, PlayCircleOutlined, TagsOutlined, VideoCameraOutlined, AppstoreOutlined } from '@ant-design/icons'
 import { Button, Empty, Input, Modal, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
 import { useMemo, useState } from 'react'
 import type { DigitalHumanCommunityVideo } from '../../services/digitalHumanCommunity'
 import { toMediaUrl } from '../../utils/mediaUrl'
+
+const LIVE_MODE_KEY = 'digitalHuman.community.liveMode.v1'
 
 const MY_INDUSTRY_KEY = 'digitalHuman.community.myIndustry.v1'
 const UNTAGGED_FILTER = '__untagged__'
@@ -130,6 +132,29 @@ export default function DigitalHumanCommunityPanel(props: {
         }
     })
     const [myIndustryDraft, setMyIndustryDraft] = useState('')
+    // 直播展示模式
+    const [liveMode, setLiveMode] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem(LIVE_MODE_KEY) === 'true'
+        } catch {
+            return false
+        }
+    })
+
+    const toggleLiveMode = () => {
+        const next = !liveMode
+        setLiveMode(next)
+        try {
+            localStorage.setItem(LIVE_MODE_KEY, String(next))
+        } catch {
+            // ignore
+        }
+        // 切换到直播模式时重置筛选
+        if (next) {
+            setQuery('')
+            setIndustryFilter('all')
+        }
+    }
 
     const industries = useMemo(() => {
         const list = Array.from(new Set(items.map((it) => String(it.industry || '').trim()).filter(Boolean)))
@@ -262,238 +287,346 @@ export default function DigitalHumanCommunityPanel(props: {
             </div>
 
             <Modal
-                title="社区作品库"
+                title={
+                    liveMode ? (
+                        /* 直播模式：品牌标题居中 + 模式切换按钮右侧 */
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', paddingRight: 32 }}>
+                            <div className="live-mode-brand-header">
+                                <span className="live-mode-brand-360">360行</span>
+                                <span className="live-mode-brand-ai">AI数字获客系统</span>
+                            </div>
+                            <div
+                                className={`live-mode-toggle active`}
+                                onClick={toggleLiveMode}
+                                style={{ position: 'absolute', right: 32, top: '50%', transform: 'translateY(-50%)' }}
+                            >
+                                <AppstoreOutlined className="live-mode-toggle-icon" />
+                                <span className="live-mode-toggle-text">普通模式</span>
+                            </div>
+                        </div>
+                    ) : (
+                        /* 普通模式：显示标题和切换按钮 */
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 32 }}>
+                            <span>社区作品库</span>
+                            <div
+                                className="live-mode-toggle"
+                                onClick={toggleLiveMode}
+                            >
+                                <VideoCameraOutlined className="live-mode-toggle-icon" />
+                                <span className="live-mode-toggle-text">直播展示</span>
+                            </div>
+                        </div>
+                    )
+                }
                 open={open}
                 onCancel={() => setOpen(false)}
                 footer={null}
-                width={1120}
-                styles={{ body: { paddingTop: 12 } }}
+                width={liveMode ? '95vw' : 1120}
+                style={liveMode ? { top: 20 } : undefined}
+                styles={{
+                    body: { paddingTop: liveMode ? 16 : 12 },
+                    content: liveMode ? { maxWidth: 1600, margin: '0 auto' } : undefined
+                }}
             >
-                <div
-                    style={{
-                        borderRadius: 14,
-                        padding: 16,
-                        marginBottom: 18,
-                        border: '1px solid rgba(255,255,255,0.08)',
-                        background: 'linear-gradient(135deg, rgba(47,84,235,0.14), rgba(114,46,209,0.08))',
-                    }}
-                >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                        <div style={{ minWidth: 280, flex: 1 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                <TagsOutlined style={{ color: 'rgba(255,255,255,0.9)' }} />
-                                <Typography.Text strong style={{ fontSize: 15, color: 'rgba(255,255,255,0.9)' }}>
-                                    行业总览
-                                </Typography.Text>
-                                <Tag
-                                    color="default"
-                                    style={{
-                                        margin: 0,
-                                        border: 'none',
-                                        background: 'rgba(0,0,0,0.25)',
-                                        borderRadius: 999,
-                                        padding: '2px 10px',
-                                    }}
+                {liveMode ? (
+                    /* ========== 直播展示模式 ========== */
+                    <div className="live-mode-container">
+                        {/* 超大行业按钮网格 - 核心展示区 */}
+                        <div className="live-mode-industry-grid">
+                            <div
+                                className={`live-mode-industry-btn ${industryFilter === 'all' ? 'active' : ''}`}
+                                onClick={() => setIndustryFilter('all')}
+                            >
+                                <span className="live-mode-industry-name">全部行业</span>
+                            </div>
+                            {industryStats.sorted.map(({ industry }) => (
+                                <div
+                                    key={industry}
+                                    className={`live-mode-industry-btn ${industryFilter === industry ? 'active' : ''}`}
+                                    onClick={() => setIndustryFilter(industry)}
                                 >
-                                    已收录 {industryStats.industryCount} 个行业 · 共 {industryStats.total} 条作品
-                                </Tag>
-                            </div>
+                                    <span className="live-mode-industry-name">{industry}</span>
+                                </div>
+                            ))}
+                        </div>
 
-                            <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                                <Input
-                                    placeholder="输入你的行业（例：保险 / 房产 / 医美 / 教培）"
-                                    value={myIndustryDraft}
-                                    onChange={(e) => setMyIndustryDraft(e.target.value)}
-                                    allowClear
-                                    style={{ maxWidth: 360, borderRadius: 10 }}
-                                />
-                                <Button onClick={() => saveMyIndustry(myIndustryDraft)} disabled={!myIndustryDraft.trim()}>
-                                    设为我的行业
-                                </Button>
-                                <Button type="primary" onClick={applyMyIndustryFilter} disabled={!myIndustryDraft.trim()}>
-                                    按我的行业展示
-                                </Button>
-                                {myIndustry ? (
-                                    <Tag
-                                        color={industries.includes(myIndustry) ? pickIndustryColor(myIndustry) : 'default'}
-                                        style={{ margin: 0, borderRadius: 999, padding: '3px 10px' }}
-                                    >
-                                        我的行业：{myIndustry}
-                                    </Tag>
-                                ) : null}
+                        {/* 大尺寸视频网格 */}
+                        {filtered.length === 0 ? (
+                            <div className="live-mode-empty">
+                                <VideoCameraOutlined className="live-mode-empty-icon" />
+                                <div className="live-mode-empty-text">
+                                    {industryFilter !== 'all' ? `暂无「${industryFilter}」行业的作品` : '暂无作品'}
+                                </div>
                             </div>
-
-                            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                {industryStats.sorted.slice(0, 16).map(({ industry, count }) => (
-                                    <Tag
-                                        key={industry}
-                                        color={pickIndustryColor(industry)}
-                                        style={{
-                                            margin: 0,
-                                            cursor: 'pointer',
-                                            borderRadius: 999,
-                                            padding: '4px 10px',
-                                            fontSize: 13,
-                                            border: industryFilter === industry ? '1px solid rgba(255,255,255,0.55)' : 'none',
-                                        }}
-                                        onClick={() => setIndustryFilter(industry)}
+                        ) : (
+                            <div className="live-mode-video-grid">
+                                {filtered.map((it) => (
+                                    <div
+                                        key={it.id}
+                                        className="live-mode-video-tile"
+                                        onClick={() => handlePlay(it)}
                                     >
-                                        {industry} · {count}
-                                    </Tag>
+                                        {/* AI数字人标识角标 */}
+                                        <div className="live-mode-video-ai-badge">AI数字人</div>
+                                        <video
+                                            src={toMediaUrl(it.videoPath)}
+                                            muted
+                                            playsInline
+                                            preload="metadata"
+                                            onLoadedMetadata={(e) => {
+                                                const el = e.currentTarget
+                                                if (el.currentTime < 0.1) el.currentTime = 0.1
+                                            }}
+                                        />
+                                        <PlayCircleOutlined className="live-mode-play-icon" />
+                                        <div className="live-mode-video-overlay">
+                                            <div className="live-mode-video-title">{it.title || '未命名'}</div>
+                                            {it.industry && (
+                                                <div className="live-mode-video-industry">{it.industry}</div>
+                                            )}
+                                        </div>
+                                        {/* 底部光效装饰 */}
+                                        <div className="live-mode-video-glow" />
+                                    </div>
                                 ))}
-                                {industryStats.untagged > 0 && (
+                            </div>
+                        )}
+
+                        {/* 版权声明 */}
+                        <div className="live-mode-disclaimer">
+                            此克隆视频，不做商业用途，只做AI编程教学
+                        </div>
+                    </div>
+                ) : (
+                    /* ========== 普通模式 ========== */
+                    <>
+                        <div
+                            style={{
+                                borderRadius: 14,
+                                padding: 16,
+                                marginBottom: 18,
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                background: 'linear-gradient(135deg, rgba(47,84,235,0.14), rgba(114,46,209,0.08))',
+                            }}
+                        >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                                <div style={{ minWidth: 280, flex: 1 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                        <TagsOutlined style={{ color: 'rgba(255,255,255,0.9)' }} />
+                                        <Typography.Text strong style={{ fontSize: 15, color: 'rgba(255,255,255,0.9)' }}>
+                                            行业总览
+                                        </Typography.Text>
+                                        <Tag
+                                            color="default"
+                                            style={{
+                                                margin: 0,
+                                                border: 'none',
+                                                background: 'rgba(0,0,0,0.25)',
+                                                borderRadius: 999,
+                                                padding: '2px 10px',
+                                            }}
+                                        >
+                                            已收录 {industryStats.industryCount} 个行业 · 共 {industryStats.total} 条作品
+                                        </Tag>
+                                    </div>
+
+                                    <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                                        <Input
+                                            placeholder="输入你的行业（例：保险 / 房产 / 医美 / 教培）"
+                                            value={myIndustryDraft}
+                                            onChange={(e) => setMyIndustryDraft(e.target.value)}
+                                            allowClear
+                                            style={{ maxWidth: 360, borderRadius: 10 }}
+                                        />
+                                        <Button onClick={() => saveMyIndustry(myIndustryDraft)} disabled={!myIndustryDraft.trim()}>
+                                            设为我的行业
+                                        </Button>
+                                        <Button type="primary" onClick={applyMyIndustryFilter} disabled={!myIndustryDraft.trim()}>
+                                            按我的行业展示
+                                        </Button>
+                                        {myIndustry ? (
+                                            <Tag
+                                                color={industries.includes(myIndustry) ? pickIndustryColor(myIndustry) : 'default'}
+                                                style={{ margin: 0, borderRadius: 999, padding: '3px 10px' }}
+                                            >
+                                                我的行业：{myIndustry}
+                                            </Tag>
+                                        ) : null}
+                                    </div>
+
+                                    <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                        {industryStats.sorted.slice(0, 16).map(({ industry, count }) => (
+                                            <Tag
+                                                key={industry}
+                                                color={pickIndustryColor(industry)}
+                                                style={{
+                                                    margin: 0,
+                                                    cursor: 'pointer',
+                                                    borderRadius: 999,
+                                                    padding: '4px 10px',
+                                                    fontSize: 13,
+                                                    border: industryFilter === industry ? '1px solid rgba(255,255,255,0.55)' : 'none',
+                                                }}
+                                                onClick={() => setIndustryFilter(industry)}
+                                            >
+                                                {industry} · {count}
+                                            </Tag>
+                                        ))}
+                                        {industryStats.untagged > 0 && (
+                                            <Tag
+                                                color="default"
+                                                style={{
+                                                    margin: 0,
+                                                    cursor: 'pointer',
+                                                    borderRadius: 999,
+                                                    padding: '4px 10px',
+                                                    fontSize: 13,
+                                                    background: 'rgba(0,0,0,0.25)',
+                                                    border: industryFilter === UNTAGGED_FILTER ? '1px solid rgba(255,255,255,0.55)' : 'none',
+                                                }}
+                                                onClick={() => setIndustryFilter(UNTAGGED_FILTER)}
+                                            >
+                                                未设置行业 · {industryStats.untagged}
+                                            </Tag>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                                     <Tag
                                         color="default"
                                         style={{
                                             margin: 0,
-                                            cursor: 'pointer',
-                                            borderRadius: 999,
-                                            padding: '4px 10px',
-                                            fontSize: 13,
+                                            border: 'none',
                                             background: 'rgba(0,0,0,0.25)',
-                                            border: industryFilter === UNTAGGED_FILTER ? '1px solid rgba(255,255,255,0.55)' : 'none',
+                                            borderRadius: 999,
+                                            padding: '2px 10px',
                                         }}
-                                        onClick={() => setIndustryFilter(UNTAGGED_FILTER)}
                                     >
-                                        未设置行业 · {industryStats.untagged}
+                                        提示：点作品下方「设置行业」可补齐标签
                                     </Tag>
-                                )}
-                            </div>
-                        </div>
-
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <Tag
-                                color="default"
-                                style={{
-                                    margin: 0,
-                                    border: 'none',
-                                    background: 'rgba(0,0,0,0.25)',
-                                    borderRadius: 999,
-                                    padding: '2px 10px',
-                                }}
-                            >
-                                提示：点作品下方「设置行业」可补齐标签
-                            </Tag>
-                            <Button
-                                size="small"
-                                onClick={() => {
-                                    setIndustryFilter('all')
-                                    setQuery('')
-                                }}
-                            >
-                                重置筛选
-                            </Button>
-                        </div>
-                    </div>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20, alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' }}>
-                    <Input
-                        placeholder="搜索 标题 / 形象 / 行业"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        allowClear
-                        style={{ maxWidth: 400, borderRadius: 8 }}
-                    />
-                    <Space size={12} wrap>
-                        <Select
-                            value={sortMode}
-                            onChange={(v) => setSortMode(v)}
-                            style={{ width: 120 }}
-                            bordered={false}
-                            dropdownStyle={{ borderRadius: 12 }}
-                            options={[
-                                { label: '按行业', value: 'industry' },
-                                { label: '最新优先', value: 'newest' },
-                                { label: '手动排序', value: 'manual' },
-                            ]}
-                        />
-                        <Select
-                            value={industryFilter}
-                            onChange={(v) => setIndustryFilter(v)}
-                            style={{ width: 130 }}
-                            bordered={false}
-                            dropdownStyle={{ borderRadius: 12 }}
-                            options={[
-                                { label: '全部行业', value: 'all' },
-                                { label: industryStats.untagged > 0 ? `未设置行业 (${industryStats.untagged})` : '未设置行业', value: UNTAGGED_FILTER },
-                                ...industries.map((it) => ({ label: it, value: it })),
-                            ]}
-                        />
-                        <Tag color="default" style={{ border: 'none', background: 'rgba(255,255,255,0.06)', borderRadius: 20, padding: '2px 12px' }}>
-                            共 {filtered.length} 条
-                        </Tag>
-                    </Space>
-                </div>
-
-                {filtered.length === 0 ? (
-                    <Empty
-                        description={
-                            industryFilter !== 'all' && industryFilter !== UNTAGGED_FILTER
-                                ? `暂无「${industryFilter}」行业的作品（你可以先给自己的作品打上行业标签）`
-                                : '暂无作品'
-                        }
-                        style={{ margin: '60px 0' }}
-                    />
-                ) : (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 24 }}>
-                        {filtered.map((it) => (
-                            <div key={it.id} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                                <VideoTile item={it} onPlay={handlePlay} onDelete={onDelete} />
-                                <div style={{ minWidth: 0, paddingLeft: 4 }}>
-                                    <div style={{
-                                        fontSize: 14,
-                                        fontWeight: 600,
-                                        color: 'rgba(255,255,255,0.9)',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                        whiteSpace: 'nowrap'
-                                    }}>
-                                        {it.title || '未命名'}
-                                    </div>
-                                    <div style={{
-                                        fontSize: 12,
-                                        color: 'rgba(255,255,255,0.45)',
-                                        marginTop: 2
-                                    }}>
-                                        {formatTime(it.createdAt)}
-                                    </div>
-                                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
-                                        {it.avatarName ? (
-                                            <Tag color="purple" style={{ margin: 0, fontSize: 11, borderRadius: 4, background: 'rgba(146,84,222,0.1)', border: 'none' }}>
-                                                {it.avatarName}
-                                            </Tag>
-                                        ) : null}
-                                        <Tag
-                                            color={it.industry ? 'geekblue' : 'default'}
-                                            style={{
-                                                margin: 0,
-                                                fontSize: 12,
-                                                borderRadius: 999,
-                                                cursor: 'pointer',
-                                                background: it.industry ? 'rgba(47,84,235,0.1)' : 'rgba(255,255,255,0.05)',
-                                                border: it.industry ? '1px solid rgba(47,84,235,0.18)' : 'none',
-                                                padding: '2px 10px',
-                                            }}
-                                            onClick={() => {
-                                                setIndustryEditingId(it.id)
-                                                setIndustryDraft(String(it.industry || ''))
-                                            }}
-                                        >
-                                            {it.industry ? it.industry : '设置行业'}
-                                        </Tag>
-
-                                        {sortMode === 'manual' && (
-                                            <Space size={4} style={{ marginLeft: 'auto' }}>
-                                                <Button size="small" type="text" icon={<ArrowUpOutlined style={{ fontSize: 12 }} />} onClick={() => onMove(it.id, 'up')} />
-                                                <Button size="small" type="text" icon={<ArrowDownOutlined style={{ fontSize: 12 }} />} onClick={() => onMove(it.id, 'down')} />
-                                            </Space>
-                                        )}
-                                    </div>
+                                    <Button
+                                        size="small"
+                                        onClick={() => {
+                                            setIndustryFilter('all')
+                                            setQuery('')
+                                        }}
+                                    >
+                                        重置筛选
+                                    </Button>
                                 </div>
                             </div>
-                        ))}
-                    </div>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 20, alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' }}>
+                            <Input
+                                placeholder="搜索 标题 / 形象 / 行业"
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                allowClear
+                                style={{ maxWidth: 400, borderRadius: 8 }}
+                            />
+                            <Space size={12} wrap>
+                                <Select
+                                    value={sortMode}
+                                    onChange={(v) => setSortMode(v)}
+                                    style={{ width: 120 }}
+                                    bordered={false}
+                                    dropdownStyle={{ borderRadius: 12 }}
+                                    options={[
+                                        { label: '按行业', value: 'industry' },
+                                        { label: '最新优先', value: 'newest' },
+                                        { label: '手动排序', value: 'manual' },
+                                    ]}
+                                />
+                                <Select
+                                    value={industryFilter}
+                                    onChange={(v) => setIndustryFilter(v)}
+                                    style={{ width: 130 }}
+                                    bordered={false}
+                                    dropdownStyle={{ borderRadius: 12 }}
+                                    options={[
+                                        { label: '全部行业', value: 'all' },
+                                        { label: industryStats.untagged > 0 ? `未设置行业 (${industryStats.untagged})` : '未设置行业', value: UNTAGGED_FILTER },
+                                        ...industries.map((it) => ({ label: it, value: it })),
+                                    ]}
+                                />
+                                <Tag color="default" style={{ border: 'none', background: 'rgba(255,255,255,0.06)', borderRadius: 20, padding: '2px 12px' }}>
+                                    共 {filtered.length} 条
+                                </Tag>
+                            </Space>
+                        </div>
+
+                        {filtered.length === 0 ? (
+                            <Empty
+                                description={
+                                    industryFilter !== 'all' && industryFilter !== UNTAGGED_FILTER
+                                        ? `暂无「${industryFilter}」行业的作品（你可以先给自己的作品打上行业标签）`
+                                        : '暂无作品'
+                                }
+                                style={{ margin: '60px 0' }}
+                            />
+                        ) : (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 24 }}>
+                                {filtered.map((it) => (
+                                    <div key={it.id} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                        <VideoTile item={it} onPlay={handlePlay} onDelete={onDelete} />
+                                        <div style={{ minWidth: 0, paddingLeft: 4 }}>
+                                            <div style={{
+                                                fontSize: 14,
+                                                fontWeight: 600,
+                                                color: 'rgba(255,255,255,0.9)',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                            }}>
+                                                {it.title || '未命名'}
+                                            </div>
+                                            <div style={{
+                                                fontSize: 12,
+                                                color: 'rgba(255,255,255,0.45)',
+                                                marginTop: 2
+                                            }}>
+                                                {formatTime(it.createdAt)}
+                                            </div>
+                                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+                                                {it.avatarName ? (
+                                                    <Tag color="purple" style={{ margin: 0, fontSize: 11, borderRadius: 4, background: 'rgba(146,84,222,0.1)', border: 'none' }}>
+                                                        {it.avatarName}
+                                                    </Tag>
+                                                ) : null}
+                                                <Tag
+                                                    color={it.industry ? 'geekblue' : 'default'}
+                                                    style={{
+                                                        margin: 0,
+                                                        fontSize: 12,
+                                                        borderRadius: 999,
+                                                        cursor: 'pointer',
+                                                        background: it.industry ? 'rgba(47,84,235,0.1)' : 'rgba(255,255,255,0.05)',
+                                                        border: it.industry ? '1px solid rgba(47,84,235,0.18)' : 'none',
+                                                        padding: '2px 10px',
+                                                    }}
+                                                    onClick={() => {
+                                                        setIndustryEditingId(it.id)
+                                                        setIndustryDraft(String(it.industry || ''))
+                                                    }}
+                                                >
+                                                    {it.industry ? it.industry : '设置行业'}
+                                                </Tag>
+
+                                                {sortMode === 'manual' && (
+                                                    <Space size={4} style={{ marginLeft: 'auto' }}>
+                                                        <Button size="small" type="text" icon={<ArrowUpOutlined style={{ fontSize: 12 }} />} onClick={() => onMove(it.id, 'up')} />
+                                                        <Button size="small" type="text" icon={<ArrowDownOutlined style={{ fontSize: 12 }} />} onClick={() => onMove(it.id, 'down')} />
+                                                    </Space>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </>
                 )}
             </Modal>
 
