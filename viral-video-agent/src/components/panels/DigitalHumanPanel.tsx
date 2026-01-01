@@ -7,36 +7,19 @@
  * - 高级质感，值 2000 元/年
  */
 
-import { Button, Upload, Space, Progress, Card, message, Input, Modal, Typography, Empty, Tooltip, Select, Tag } from 'antd'
+import { Modal, Typography, message, Button, Card, Input, Space, Tag, Select, Tooltip, Empty, Progress, Upload } from 'antd'
 import {
-    UploadOutlined,
-    DownloadOutlined,
-    PlusOutlined,
-    ReloadOutlined,
-    RocketOutlined,
-    StopOutlined,
-    UserOutlined,
-    PlayCircleOutlined,
-    SoundOutlined,
-    ClockCircleOutlined,
-    CheckCircleFilled,
-    VideoCameraOutlined,
-    DeleteOutlined,
-    AudioOutlined,
-    FileTextOutlined,
+    CheckCircleFilled, UserOutlined, VideoCameraOutlined, SoundOutlined, PlayCircleOutlined,
+    DownloadOutlined, StopOutlined, RocketOutlined, ReloadOutlined, PlusOutlined,
+    FileTextOutlined, DeleteOutlined, ClockCircleOutlined, AudioOutlined, UploadOutlined
 } from '@ant-design/icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
 import CloudServiceStatus from '../CloudServiceStatus'
 import { toMediaUrl } from '../../utils/mediaUrl'
-import DigitalHumanCommunityPanel from '../digitalHuman/DigitalHumanCommunityPanel'
+import { DigitalHumanCommunityTrigger } from '../digitalHuman/DigitalHumanCommunityPanel'
 import {
     addDigitalHumanCommunityVideo,
-    clearDigitalHumanCommunity,
-    loadDigitalHumanCommunity,
-    moveDigitalHumanCommunityVideo,
-    removeDigitalHumanCommunityVideo,
-    updateDigitalHumanCommunityVideo,
     type DigitalHumanCommunityVideo,
 } from '../../services/digitalHumanCommunity'
 import { auditLog } from '../../services/auditLog'
@@ -65,6 +48,7 @@ function fileToBase64(file: File): Promise<string> {
         reader.readAsDataURL(file)
     })
 }
+
 
 // ============================================
 // 步骤组件
@@ -126,11 +110,30 @@ function StepIndicator({ stepNumber, title, completed, active }: {
 // 主组件
 // ============================================
 
-function DigitalHumanPanel() {
+interface DigitalHumanPanelProps {
+    communityItems?: DigitalHumanCommunityVideo[]
+    onOpenCommunity?: () => void
+    onClearCommunity?: () => void
+    onAddCommunity?: (item: DigitalHumanCommunityVideo) => void
+    onUpdateCommunity?: (id: string, updates: Partial<DigitalHumanCommunityVideo>) => void
+    onRemoveCommunity?: (id: string) => void
+    onMoveCommunity?: (id: string, direction: 'up' | 'down') => void
+}
+
+function DigitalHumanPanel(props: DigitalHumanPanelProps) {
+    const {
+        communityItems = [],
+        onOpenCommunity,
+        onClearCommunity,
+        onAddCommunity,
+        onUpdateCommunity: _onUpdateCommunity,
+        onRemoveCommunity: _onRemoveCommunity,
+        onMoveCommunity: _onMoveCommunity,
+    } = props
     const {
         audioPath,
+        setAudioPath,
         digitalHumanVideoPath,
-        finalVideoPath,
         originalCopy,
         rewrittenCopy,
         batchCopies,
@@ -138,24 +141,24 @@ function DigitalHumanPanel() {
         digitalHumanSelectedCopy,
         digitalHumanScriptConfirmed,
         digitalHumanGenerating,
-        digitalHumanProgress,
-        digitalHumanProgressText,
-        setAudioPath,
-        setPreview,
-        setDigitalHumanVideoPath,
-        setFinalVideoPath,
         setDigitalHumanSelectedCopy,
         setDigitalHumanScriptConfirmed,
         setDigitalHumanGenerating,
         setDigitalHumanProgress,
-        setActiveKey,
+        digitalHumanProgress,
+        digitalHumanProgressText,
         digitalHumanDownloading,
-        digitalHumanDownloadProgress,
-        digitalHumanDownloadText,
         setDigitalHumanDownloading,
         setDigitalHumanDownloadProgress,
+        digitalHumanDownloadProgress,
+        digitalHumanDownloadText,
         digitalHumanSynthesisResult,
         setDigitalHumanSynthesisResult,
+        setDigitalHumanVideoPath,
+        finalVideoPath,
+        setFinalVideoPath,
+        setPreview,
+        setActiveKey,
     } = useAppStore()
 
     // 状态
@@ -167,7 +170,6 @@ function DigitalHumanPanel() {
     const [newAvatarName, setNewAvatarName] = useState('')
     const [newAvatarFile, setNewAvatarFile] = useState<File | null>(null)
     const [isSavingAvatar, setIsSavingAvatar] = useState(false)
-
     const [isSavingToDesktop, setIsSavingToDesktop] = useState(false)
 
     const [audioPreviewOpen, setAudioPreviewOpen] = useState(false)
@@ -175,15 +177,30 @@ function DigitalHumanPanel() {
     const [audioPreviewName, setAudioPreviewName] = useState('')
 
     const [generatingModalOpen, setGeneratingModalOpen] = useState(false)
-    const [generatingModalDismissed, setGeneratingModalDismissed] = useState(false)
-    const [generatingTipIndex, setGeneratingTipIndex] = useState(0)
+    const [, setGeneratingModalDismissed] = useState(false)
+    const [generatingTipIndex] = useState(0)
     const [generatingElapsedMs, setGeneratingElapsedMs] = useState(0)
+
 
     const generatingStartAtRef = useRef<number>(0)
     const generatingElapsedTimerRef = useRef<number | null>(null)
     const generatingTipTimerRef = useRef<number | null>(null)
-    const fakeProgressTimerRef = useRef<number | null>(null)
-    const [communityItems, setCommunityItems] = useState<DigitalHumanCommunityVideo[]>(() => loadDigitalHumanCommunity())
+
+    const formatDuration = (ms: number) => {
+        const total = Math.max(0, Math.floor(ms / 1000))
+        const m = Math.floor(total / 60)
+        const s = total % 60
+        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    }
+
+    const estimateRemainingMs = (elapsedMs: number, percent: number) => {
+        if (!percent || percent <= 0 || percent >= 100) return null
+        const total = elapsedMs / (percent / 100)
+        const remaining = Math.max(0, Math.floor(total - elapsedMs))
+        if (!Number.isFinite(remaining) || remaining <= 0) return null
+        return remaining
+    }
+
 
     const confirmLegalUse = useCallback(async (actionLabel: string) => {
         const ok = await new Promise<boolean>((resolve) => {
@@ -221,69 +238,10 @@ function DigitalHumanPanel() {
         '生成过程中进度可能会卡住一段时间，这是正常的队列/渲染阶段，请耐心等待。',
     ], [])
 
-    const formatDuration = useCallback((ms: number) => {
-        const total = Math.max(0, Math.floor(ms / 1000))
-        const m = Math.floor(total / 60)
-        const s = total % 60
-        return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    }, [])
-
-    const estimateRemainingMs = useCallback((elapsedMs: number, percent: number) => {
-        if (!percent || percent <= 0 || percent >= 100) return null
-        const total = elapsedMs / (percent / 100)
-        const remaining = Math.max(0, Math.floor(total - elapsedMs))
-        if (!Number.isFinite(remaining) || remaining <= 0) return null
-        return remaining
-    }, [])
-
-    const startFakeSynthesisProgress = useCallback(() => {
-        if (fakeProgressTimerRef.current) {
-            window.clearInterval(fakeProgressTimerRef.current)
-            fakeProgressTimerRef.current = null
-        }
-
-        const startedAt = Date.now()
-        fakeProgressTimerRef.current = window.setInterval(() => {
-            const state = useAppStore.getState()
-            if (!state.digitalHumanGenerating) return
-
-            const base = Math.max(0, state.digitalHumanProgress || 0)
-            if (base >= 95) return
-
-            const elapsedSec = Math.max(0, (Date.now() - startedAt) / 1000)
-            const tau = 180
-            const eased = 1 - Math.exp(-elapsedSec / tau)
-            const simulated = Math.min(95, Math.floor(5 + eased * 90))
-            const next = Math.max(base, simulated)
-            if (next <= base) return
-
-            const stageText =
-                next < 15 ? '排队中：正在等待算力资源...' :
-                    next < 35 ? '解析音频：提取节奏与发音特征...' :
-                        next < 55 ? '驱动口型：正在对齐唇形与表情...' :
-                            next < 75 ? '渲染画面：逐帧合成中...' :
-                                next < 90 ? '合成视频：拼接与编码中...' :
-                                    '收尾处理：即将完成...'
-
-            const keepText = String(state.digitalHumanProgressText || '').trim()
-            state.setDigitalHumanProgress(next, keepText || stageText)
-        }, 1000)
-    }, [])
-
-    const stopFakeSynthesisProgress = useCallback(() => {
-        if (fakeProgressTimerRef.current) {
-            window.clearInterval(fakeProgressTimerRef.current)
-            fakeProgressTimerRef.current = null
-        }
-    }, [])
-
     useEffect(() => {
         if (!digitalHumanGenerating) {
-            setGeneratingModalOpen(false)
-            setGeneratingModalDismissed(false)
             setGeneratingElapsedMs(0)
             generatingStartAtRef.current = 0
-            stopFakeSynthesisProgress()
 
             if (generatingElapsedTimerRef.current) {
                 window.clearInterval(generatingElapsedTimerRef.current)
@@ -296,18 +254,15 @@ function DigitalHumanPanel() {
             return
         }
 
-        setGeneratingModalDismissed(false)
-        setGeneratingModalOpen(true)
         generatingStartAtRef.current = Date.now()
         setGeneratingElapsedMs(0)
-        setGeneratingTipIndex(0)
 
         generatingElapsedTimerRef.current = window.setInterval(() => {
             setGeneratingElapsedMs(Date.now() - generatingStartAtRef.current)
         }, 1000)
 
         generatingTipTimerRef.current = window.setInterval(() => {
-            setGeneratingTipIndex((v) => (v + 1) % GENERATING_TIPS.length)
+            // setGeneratingTipIndex((v) => (v + 1) % GENERATING_TIPS.length) // Removed setGeneratingTipIndex
         }, 6500)
 
         return () => {
@@ -320,7 +275,7 @@ function DigitalHumanPanel() {
                 generatingTipTimerRef.current = null
             }
         }
-    }, [GENERATING_TIPS.length, digitalHumanGenerating, stopFakeSynthesisProgress])
+    }, [GENERATING_TIPS.length, digitalHumanGenerating])
 
     // 分阶段状态：合成完成后显示下载按钮
     // 当前步骤
@@ -370,9 +325,7 @@ function DigitalHumanPanel() {
     const hasText = textToSpeak.length > 0
     const readyForVideo = transcriptConfirmed && hasAudio
 
-    useEffect(() => {
-        setCommunityItems(loadDigitalHumanCommunity())
-    }, [])
+
 
     useEffect(() => {
         const sourcePath = (digitalHumanVideoPath || '').trim()
@@ -385,23 +338,26 @@ function DigitalHumanPanel() {
         const maybeUuid = (globalThis.crypto as any)?.randomUUID?.()
         const id = typeof maybeUuid === 'string' && maybeUuid ? maybeUuid : `${Date.now()}_${Math.random().toString(16).slice(2)}`
 
-        const upsert = (videoPath: string) => {
+        const saveItem = (path: string) => {
             const item: DigitalHumanCommunityVideo = {
                 id,
                 title: titleBase,
                 avatarName,
                 createdAt,
                 sourcePath,
-                videoPath,
+                videoPath: path,
             }
-            const next = addDigitalHumanCommunityVideo(item)
-            setCommunityItems(next)
+            if (onAddCommunity) {
+                onAddCommunity(item)
+            } else {
+                addDigitalHumanCommunityVideo(item)
+            }
         }
 
             ; (async () => {
                 try {
-                    const items = loadDigitalHumanCommunity()
-                    const exists = items.some((it) => it.sourcePath === sourcePath || it.videoPath === sourcePath)
+                    // Check existence in current items
+                    const exists = communityItems.some((it) => it.sourcePath === sourcePath || it.videoPath === sourcePath)
                     if (exists) return
 
                     if (window.electronAPI?.invoke) {
@@ -410,16 +366,17 @@ function DigitalHumanPanel() {
                             title: titleBase,
                         })
                         const destPath = (res?.success && res?.data?.destPath) ? String(res.data.destPath) : ''
-                        upsert(destPath || sourcePath)
+                        saveItem(destPath || sourcePath)
                         return
                     }
 
-                    upsert(sourcePath)
-                } catch {
-                    upsert(sourcePath)
+                    saveItem(sourcePath)
+                } catch (e: unknown) {
+                    console.error('Failed to save to community:', e);
+                    saveItem(sourcePath)
                 }
             })()
-    }, [digitalHumanVideoPath, digitalHumanSelectedCopy?.title, selectedAvatar?.name])
+    }, [digitalHumanVideoPath, digitalHumanSelectedCopy?.title, selectedAvatar?.name, communityItems, onAddCommunity])
 
     useEffect(() => {
         if (transcriptCandidates.length === 0) return
@@ -465,7 +422,7 @@ function DigitalHumanPanel() {
                     setSelectedAvatarId(result.data[0].id)
                 }
             }
-        } catch (e) {
+        } catch (e: unknown) {
             console.error('加载形象失败:', e)
         }
     }, [selectedAvatarId])
@@ -507,12 +464,12 @@ function DigitalHumanPanel() {
                 setNewAvatarName('')
                 setNewAvatarFile(null)
                 await refreshAvatars()
-                setSelectedAvatarId(result.data.id)
+                if (result.data?.id) setSelectedAvatarId(result.data.id)
             } else {
                 throw new Error(result?.error || '保存失败')
             }
-        } catch (e: any) {
-            message.error(e.message)
+        } catch (e: unknown) {
+            message.error(String(e))
         } finally {
             setIsSavingAvatar(false)
         }
@@ -529,23 +486,13 @@ function DigitalHumanPanel() {
             if (selectedAvatarId === avatarId) {
                 setSelectedAvatarId('')
             }
-        } catch (e: any) {
-            message.error(e.message)
+        } catch (e: unknown) {
+            message.error(String(e))
         }
     }
 
-    const generateVideo = useCallback(async (params: { avatarVideoPath: string; audioPath: string }) => {
-        const result = await window.electronAPI?.invoke('cloud-gpu-generate-video', params)
 
-        if (result?.success && result.data?.videoPath) {
-            setDigitalHumanVideoPath(result.data.videoPath)
-            setFinalVideoPath(result.data.videoPath)
-            setPreview('video', result.data.videoPath)
-            return result.data.videoPath as string
-        }
 
-        throw new Error(result?.error || '生成失败')
-    }, [setDigitalHumanVideoPath, setFinalVideoPath, setPreview])
 
     const ensureAudioDurationValid = useCallback(async (): Promise<boolean> => {
         if (!window.electronAPI?.invoke) return true
@@ -595,7 +542,7 @@ function DigitalHumanPanel() {
             if (!ready) return
 
             setDigitalHumanProgress(5, '正在提交合成任务...')
-            startFakeSynthesisProgress()
+            // startFakeSynthesisProgress()
             const result = await window.electronAPI?.invoke('cloud-gpu-synthesize-only', {
                 avatarVideoPath: selectedAvatar.remoteVideoPath,
                 audioPath,
@@ -629,7 +576,7 @@ function DigitalHumanPanel() {
                 message.error(msg)
             }
         } finally {
-            stopFakeSynthesisProgress()
+            // stopFakeSynthesisProgress()
             setDigitalHumanGenerating(false)
         }
     }
@@ -682,7 +629,7 @@ function DigitalHumanPanel() {
         try {
             await window.electronAPI?.invoke('cloud-gpu-cancel-synthesis')
         } finally {
-            stopFakeSynthesisProgress()
+            // stopFakeSynthesisProgress()
             setDigitalHumanGenerating(false)
             setDigitalHumanProgress(0, '已取消合成')
         }
@@ -692,51 +639,11 @@ function DigitalHumanPanel() {
         if (!digitalHumanDownloading) return
         try {
             await window.electronAPI?.invoke('cloud-gpu-cancel-download')
+        } catch (e: any) {
+            message.error(e.message || String(e))
         } finally {
             setDigitalHumanDownloading(false)
             setDigitalHumanDownloadProgress(0, '已取消下载')
-        }
-    }
-
-    // 保留原有的一键生成功能（用于兼容）
-    const handleGenerate = async () => {
-        if (digitalHumanGenerating) {
-            message.info('正在生成中，请稍候...')
-            return
-        }
-        if (!selectedAvatar) {
-            message.error('请先选择或创建一个数字人形象')
-            return
-        }
-        if (!audioPath) {
-            message.error('请先准备音频：进入「音频生成」录制/合成（克隆你的声音）')
-            return
-        }
-        if (!transcriptConfirmed) {
-            message.warning('请先编辑逐字稿并点击「确认用于出片」')
-            return
-        }
-        if (!(await ensureAudioDurationValid())) return
-        if (!(await confirmLegalUse('数字人生成'))) return
-
-        setDigitalHumanGenerating(true)
-        setDigitalHumanProgress(0, '准备数字人服务...')
-
-        try {
-            const ready = await ensureCloudGpuReady()
-            if (!ready) return
-
-            setDigitalHumanProgress(5, '正在提交视频任务...')
-            await generateVideo({
-                avatarVideoPath: selectedAvatar.remoteVideoPath,
-                audioPath,
-            })
-            setDigitalHumanProgress(100, '生成完成')
-            message.success('视频生成成功！')
-        } catch (e: any) {
-            message.error(e.message)
-        } finally {
-            setDigitalHumanGenerating(false)
         }
     }
 
@@ -788,34 +695,11 @@ function DigitalHumanPanel() {
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 12 }}>
                         <CloudServiceStatus kind="gpu" />
-                        <DigitalHumanCommunityPanel
+                        <DigitalHumanCommunityTrigger
                             items={communityItems}
-                            onPlayPath={(videoPath) => setPreview('video', videoPath)}
-                            onDelete={(id) => {
-                                const next = removeDigitalHumanCommunityVideo(id)
-                                setCommunityItems(next)
-                            }}
-                            onUpdate={(id, patch) => {
-                                const next = updateDigitalHumanCommunityVideo(id, patch)
-                                setCommunityItems(next)
-                            }}
-                            onMove={(id, direction) => {
-                                const next = moveDigitalHumanCommunityVideo(id, direction)
-                                setCommunityItems(next)
-                            }}
-                            onClear={() => {
-                                Modal.confirm({
-                                    title: '清空社区作品？',
-                                    content: '清空后不可恢复（不会删除你电脑上的原视频文件，只是移除列表）。',
-                                    okText: '清空',
-                                    cancelText: '取消',
-                                    okButtonProps: { danger: true },
-                                    onOk: async () => {
-                                        clearDigitalHumanCommunity()
-                                        setCommunityItems([])
-                                    },
-                                })
-                            }}
+                            onOpen={onOpenCommunity || (() => { })}
+                            onClear={onClearCommunity || (() => { })}
+                            industryCount={new Set(communityItems.map(i => String(i.industry || '').trim()).filter(Boolean)).size}
                         />
                     </div>
                 </div>
@@ -949,12 +833,12 @@ function DigitalHumanPanel() {
                                     onChange={(title) => {
                                         const next = transcriptCandidates.find(c => c.title === title)
                                         if (!next) return
-                                        if (audioPath) setAudioPath(null)
+                                        if (audioPath) setAudioPath('')
                                         if (digitalHumanVideoPath) {
                                             const previousVideoPath = digitalHumanVideoPath
-                                            setDigitalHumanVideoPath(null)
+                                            setDigitalHumanVideoPath('')
                                             if (finalVideoPath === previousVideoPath) {
-                                                setFinalVideoPath(null)
+                                                setFinalVideoPath('')
                                             }
                                         }
                                         setDigitalHumanSelectedCopy({ title: next.title, copy: next.copy })
@@ -982,12 +866,12 @@ function DigitalHumanPanel() {
                             onChange={(e) => {
                                 const title = (digitalHumanSelectedCopy?.title || transcriptCandidates[0]?.title || '逐字稿').trim()
                                 // 文案变更后，必须重新确认；已生成的音频/视频也会失效，避免出片内容不一致
-                                if (audioPath) setAudioPath(null)
+                                if (audioPath) setAudioPath('')
                                 if (digitalHumanVideoPath) {
                                     const previousVideoPath = digitalHumanVideoPath
-                                    setDigitalHumanVideoPath(null)
+                                    setDigitalHumanVideoPath('')
                                     if (finalVideoPath === previousVideoPath) {
-                                        setFinalVideoPath(null)
+                                        setFinalVideoPath('')
                                     }
                                 }
                                 setDigitalHumanSelectedCopy({ title, copy: e.target.value })
@@ -1476,7 +1360,7 @@ function DigitalHumanPanel() {
                                     <Button
                                         size="small"
                                         icon={<PlayCircleOutlined />}
-                                        onClick={() => setPreview('video', digitalHumanVideoPath)}
+                                        onClick={() => setPreview('video', digitalHumanVideoPath || '')}
                                     >
                                         预览
                                     </Button>
@@ -1496,15 +1380,16 @@ function DigitalHumanPanel() {
 
                     </Card>
                 </div>
-            </div>
+            </div >
 
             {/* 音频试听弹窗（数字人步骤不显示右侧预览区，故在此处直接提供播放器） */}
-            <Modal
+            < Modal
                 title={
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    < div style={{ display: 'flex', alignItems: 'center', gap: 10 }
+                    }>
                         <SoundOutlined style={{ color: '#722ed1' }} />
                         试听音频
-                    </div>
+                    </div >
                 }
                 open={audioPreviewOpen}
                 onCancel={() => setAudioPreviewOpen(false)}
@@ -1528,15 +1413,15 @@ function DigitalHumanPanel() {
                         onError={() => message.error('音频播放失败：请确认文件存在且格式可播放')}
                     />
                 </Space>
-            </Modal>
+            </Modal >
 
             {/* 合成进度弹窗 */}
-            <Modal
+            < Modal
                 title={
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    < div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <ClockCircleOutlined style={{ color: '#1677ff' }} />
                         合成中，请稍候
-                    </div>
+                    </div >
                 }
                 open={digitalHumanGenerating && generatingModalOpen}
                 onCancel={() => {
@@ -1548,7 +1433,7 @@ function DigitalHumanPanel() {
                 maskClosable={false}
                 width={640}
                 footer={
-                    <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                    < Space style={{ width: '100%', justifyContent: 'space-between' }}>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                             已用时 {formatDuration(generatingElapsedMs)}
                             {(() => {
@@ -1565,7 +1450,7 @@ function DigitalHumanPanel() {
                         >
                             放到后台继续
                         </Button>
-                    </Space>
+                    </Space >
                 }
             >
                 <style>{`
@@ -1646,15 +1531,15 @@ function DigitalHumanPanel() {
                         </Typography.Text>
                     </div>
                 </Space>
-            </Modal>
+            </Modal >
 
             {/* 创建形象弹窗 */}
-            <Modal
+            < Modal
                 title={
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    < div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <UserOutlined style={{ color: '#1677ff' }} />
                         创建数字人形象
-                    </div>
+                    </div >
                 }
                 open={showNewAvatarModal}
                 onCancel={() => {
@@ -1724,8 +1609,8 @@ function DigitalHumanPanel() {
                         保存形象
                     </Button>
                 </Space>
-            </Modal>
-        </div>
+            </Modal >
+        </div >
     )
 }
 

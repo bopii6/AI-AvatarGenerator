@@ -8,7 +8,19 @@ import {
     RocketOutlined,
     DownOutlined,
     FileSearchOutlined,
+    ExpandOutlined,
+    TagsOutlined,
 } from '@ant-design/icons'
+import {
+    addDigitalHumanCommunityVideo,
+    loadDigitalHumanCommunity,
+    moveDigitalHumanCommunityVideo,
+    removeDigitalHumanCommunityVideo,
+    updateDigitalHumanCommunityVideo,
+    clearDigitalHumanCommunity,
+    type DigitalHumanCommunityVideo,
+} from './services/digitalHumanCommunity'
+import { DigitalHumanCommunityModal } from './components/digitalHuman/DigitalHumanCommunityPanel'
 import { useAppStore } from './store/appStore'
 import CookieSettings from './components/CookieSettings'
 import VoiceCloneSettings from './components/VoiceCloneSettings'
@@ -163,6 +175,60 @@ function App() {
     const autoRefreshBtnRef = useRef<HTMLSpanElement | null>(null)
     const autoDetailBtnRef = useRef<HTMLSpanElement | null>(null)
     const autoProgressCardRef = useRef<HTMLDivElement | null>(null)
+
+    const [communityItems, setCommunityItems] = useState<DigitalHumanCommunityVideo[]>(() => loadDigitalHumanCommunity())
+    const [communityPanelOpen, setCommunityPanelOpen] = useState(false)
+
+    // Load community items on mount
+    useEffect(() => {
+        setCommunityItems(loadDigitalHumanCommunity())
+    }, [])
+
+    const handleCommunityUpdate = (items: DigitalHumanCommunityVideo[]) => {
+        setCommunityItems(items)
+    }
+
+    const handleOpenCommunity = useCallback(() => {
+        setCommunityPanelOpen(true)
+    }, [])
+
+    const handleClearCommunity = useCallback(() => {
+        Modal.confirm({
+            title: '确认清空社区素材？',
+            content: '此操作将删除所有社区数字人素材，且无法恢复。',
+            okText: '清空',
+            okType: 'danger',
+            cancelText: '取消',
+            onOk: () => {
+                setCommunityItems([])
+                localStorage.removeItem('digitalHuman.community')
+                message.success('社区素材已清空')
+            },
+        })
+    }, [])
+
+    const handleAddCommunity = useCallback((item: DigitalHumanCommunityVideo) => {
+        const newItems = addDigitalHumanCommunityVideo(item)
+        setCommunityItems(newItems)
+        message.success('已添加至社区素材')
+    }, [])
+
+    const handleUpdateCommunity = useCallback((id: string, updates: Partial<DigitalHumanCommunityVideo>) => {
+        const newItems = updateDigitalHumanCommunityVideo(id, updates)
+        setCommunityItems(newItems)
+        message.success('社区素材已更新')
+    }, [])
+
+    const handleRemoveCommunity = useCallback((id: string) => {
+        const newItems = removeDigitalHumanCommunityVideo(id)
+        setCommunityItems(newItems)
+        message.success('社区素材已移除')
+    }, [])
+
+    const handleMoveCommunity = useCallback((id: string, direction: 'up' | 'down') => {
+        const newItems = moveDigitalHumanCommunityVideo(id, direction)
+        setCommunityItems(newItems)
+    }, [])
 
     const {
         activeKey,
@@ -437,7 +503,7 @@ function App() {
             }
 
             const voiceModels: CloudVoiceModel[] =
-                voiceModelsRes?.success && Array.isArray(voiceModelsRes.data) ? voiceModelsRes.data : []
+                voiceModelsRes?.success && Array.isArray(voiceModelsRes.data) ? voiceModels.data : []
 
             const desiredModel = String(configRes?.data?.ALIYUN_COSYVOICE_MODEL || '').trim() || 'cosyvoice-v3-flash'
             const isCompatibleVoiceId = (vid: string) => {
@@ -1281,6 +1347,10 @@ function App() {
                     message.success('已跳转到预览与发布')
                 }}
                 onReset={resetAutoSession}
+                communityItems={communityItems}
+                onOpenCommunity={handleOpenCommunity}
+                onClearCommunity={handleClearCommunity}
+                industryCount={communityItems.length}
             />
         )
     }
@@ -1632,7 +1702,17 @@ function App() {
             case 'audio':
                 return <AudioPanel />
             case 'digitalHuman':
-                return <DigitalHumanPanel />
+                return (
+                    <DigitalHumanPanel
+                        communityItems={communityItems}
+                        onOpenCommunity={handleOpenCommunity}
+                        onClearCommunity={handleClearCommunity}
+                        onAddCommunity={handleAddCommunity}
+                        onUpdateCommunity={handleUpdateCommunity}
+                        onRemoveCommunity={handleRemoveCommunity}
+                        onMoveCommunity={handleMoveCommunity}
+                    />
+                )
             case 'subtitle':
                 return <SubtitlePanel />
             case 'cover':
@@ -1709,6 +1789,18 @@ function App() {
                     {LEGAL_DISCLAIMER_TEXT}
                 </Typography.Paragraph>
             </Modal>
+
+            <DigitalHumanCommunityModal
+                open={communityPanelOpen}
+                onClose={() => setCommunityPanelOpen(false)}
+                items={communityItems}
+                onPlayPath={(videoPath) => {
+                    setPreview('video', videoPath)
+                }}
+                onDelete={(id) => handleCommunityUpdate(removeDigitalHumanCommunityVideo(id))}
+                onUpdate={(id, patch) => handleCommunityUpdate(updateDigitalHumanCommunityVideo(id, patch))}
+                onMove={(id, dir) => handleCommunityUpdate(moveDigitalHumanCommunityVideo(id, dir))}
+            />
 
             {/* 顶部工具栏 - 新布局：左侧切换 + 中间Logo标题 + 右侧状态 */}
             <header className="header" style={{ justifyContent: 'space-between', position: 'relative' }}>
@@ -1977,35 +2069,128 @@ function App() {
                 {/* 中间操作区 */}
                 <section className="workspace">
                     <div className="step-card">
-                        <div className="step-card-title" style={{ fontSize: 28, marginBottom: 28, display: 'flex', alignItems: 'center' }}>
-                            <span style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                width: 48,
-                                height: 48,
-                                borderRadius: '50%',
-                                background: workspaceMode === 'manual'
-                                    ? 'linear-gradient(135deg, #00d4aa, #00b894)'
-                                    : 'linear-gradient(135deg, #9254de, #00d4aa)',
-                                marginRight: 16,
-                                fontSize: 22,
-                                fontWeight: 700,
-                                boxShadow: workspaceMode === 'manual'
-                                    ? '0 4px 20px rgba(0, 212, 170, 0.35)'
-                                    : '0 4px 20px rgba(146, 84, 222, 0.35)',
-                            }}>
-                                {workspaceMode === 'manual' ? (activeIndex + 1) : (autoActiveIndex + 1)}
-                            </span>
-                            <span style={{ fontWeight: 700 }}>{workspaceMode === 'manual' ? currentItemTitle : autoCurrentTitle}</span>
+                        <div className="step-card-title" style={{ fontSize: 28, marginBottom: 28, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <div style={{ display: 'flex', alignItems: 'center' }}>
+                                <span style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    width: 48,
+                                    height: 48,
+                                    borderRadius: '50%',
+                                    background: workspaceMode === 'manual'
+                                        ? 'linear-gradient(135deg, #00d4aa, #00b894)'
+                                        : 'linear-gradient(135deg, #9254de, #00d4aa)',
+                                    marginRight: 16,
+                                    fontSize: 22,
+                                    fontWeight: 700,
+                                    boxShadow: workspaceMode === 'manual'
+                                        ? '0 4px 20px rgba(0, 212, 170, 0.35)'
+                                        : '0 4px 20px rgba(146, 84, 222, 0.35)',
+                                }}>
+                                    {workspaceMode === 'manual' ? (activeIndex + 1) : (autoActiveIndex + 1)}
+                                </span>
+                                <span style={{ fontWeight: 700 }}>{workspaceMode === 'manual' ? currentItemTitle : autoCurrentTitle}</span>
+                            </div>
+
+                            {/* Community Works Button (Auto Mode Only) */}
+                            {workspaceMode === 'auto' && (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                    <Button
+                                        type="default"
+                                        icon={<ExpandOutlined />}
+                                        onClick={() => setCommunityPanelOpen(true)}
+                                        style={{
+                                            borderRadius: 12,
+                                            background: 'rgba(255,255,255,0.06)',
+                                            border: '1px solid rgba(255,255,255,0.1)',
+                                            color: 'rgba(255,255,255,0.85)'
+                                        }}
+                                    >
+                                        社区作品
+                                    </Button>
+                                    <div className="community-stats" style={{ display: 'flex', gap: 6 }}>
+                                        <div style={{
+                                            background: '#1677ff',
+                                            color: '#fff',
+                                            padding: '2px 8px',
+                                            borderRadius: 4,
+                                            fontSize: 12,
+                                            fontWeight: 600
+                                        }}>
+                                            {communityItems?.length || 0}
+                                        </div>
+                                        {(new Set(communityItems.map(i => String(i.industry || '').trim()).filter(Boolean)).size || 0) > 0 && (
+                                            <div style={{
+                                                background: 'rgba(255,255,255,0.08)',
+                                                color: 'rgba(255,255,255,0.65)',
+                                                padding: '2px 8px',
+                                                borderRadius: 999,
+                                                fontSize: 12,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 4
+                                            }}>
+                                                <TagsOutlined style={{ fontSize: 10 }} />
+                                                收录 {new Set(communityItems.map(i => String(i.industry || '').trim()).filter(Boolean)).size} 行业
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
-                        <Card
-                            className="workbench-panel"
-                            styles={{ body: { paddingTop: 18 } }}
-                        >
-                            {workspaceMode === 'manual' ? renderActivePanel() : renderAutoPanel()}
-                        </Card>
+                        {(() => {
+                            let reason: string | undefined = undefined;
+                            if (!autoVoiceReady) {
+                                reason = "请先配置并启用 CosyVoice 语音服务";
+                            } else if (!autoAvatarReady) {
+                                reason = "请先配置并启用数字人服务";
+                            }
+                            return (
+                                <Card
+                                    className="workbench-panel"
+                                    styles={{ body: { paddingTop: 18 } }}
+                                >
+                                    {workspaceMode === 'manual' ? renderActivePanel() : (
+                                        <AutoExecutionPanel
+                                            douyinUrl={douyinUrl}
+                                            setDouyinUrl={setDouyinUrl}
+                                            autoRunning={autoRunning}
+                                            startAutoPipeline={startAutoPipeline}
+                                            refreshAutoReadiness={refreshAutoReadiness}
+                                            autoActiveStep={autoActiveStep}
+                                            autoPercent={autoPercent}
+                                            autoStatusText={autoStatusText}
+                                            autoLogs={autoLogs}
+                                            autoError={autoError}
+                                            autoCheckLoading={autoCheckLoading}
+                                            autoVoiceReady={autoVoiceReady}
+                                            autoAvatarReady={autoAvatarReady}
+                                            disabledReason={reason}
+                                            autoExtractedCopy={autoExtractedCopy}
+                                            autoRewrittenCopy={autoRewrittenCopy}
+                                            autoLegalReport={autoLegalReport}
+                                            autoAudioPath={autoAudioPath}
+                                            autoFinalVideoPath={autoFinalVideoPath}
+                                            digitalHumanProgress={digitalHumanProgress}
+                                            setSettingsTab={setSettingsTab}
+                                            setSettingsOpen={setSettingsOpen}
+                                            setWorkspaceMode={setWorkspaceMode}
+                                            setActiveKey={setActiveKey}
+                                            onShowDetail={() => setAutoDetailOpen(true)}
+                                            onPublish={() => setAutoPublishOpen(true)}
+                                            onReset={resetAutoSession}
+                                            // Community Props
+                                            communityItems={communityItems}
+                                            onOpenCommunity={() => setCommunityPanelOpen(true)}
+                                            onClearCommunity={handleClearCommunity}
+                                            industryCount={new Set(communityItems.map(i => String(i.industry || '').trim()).filter(Boolean)).size}
+                                        />
+                                    )}
+                                </Card>
+                            )
+                        })()}
                     </div>
                 </section>
 
@@ -2275,6 +2460,9 @@ function App() {
                 onCancel={() => setProfileModalOpen(false)}
                 maxSelect={5}
             />
+
+            {/* Global Community Modal */}
+            {/* Removed duplicate global modal - already rendered above */}
         </>
     )
 }

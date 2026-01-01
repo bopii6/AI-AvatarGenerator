@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button, Input, Progress, message } from 'antd'
 import {
     PlayCircleOutlined,
@@ -12,7 +12,7 @@ import {
     SendOutlined,
     SearchOutlined,
     ExclamationCircleOutlined,
-    SettingOutlined
+    SettingOutlined,
 } from '@ant-design/icons'
 
 // 定义工作流程步骤
@@ -106,6 +106,11 @@ interface AutoExecutionPanelProps {
     onShowDetail: () => void
     onPublish: () => void
     onReset: () => void
+    // Community Props
+    communityItems: any[]
+    onOpenCommunity: () => void
+    onClearCommunity: () => void
+    industryCount: number
 }
 
 export default function AutoExecutionPanel(props: AutoExecutionPanelProps) {
@@ -117,6 +122,36 @@ export default function AutoExecutionPanel(props: AutoExecutionPanelProps) {
     } = props
 
     const prevStepRef = useRef<string>('')
+
+    // 交替显示的关键词 + 打字机效果
+    const rotatingWords = ['获客', '个人IP']
+    const [rotatingWordIndex, setRotatingWordIndex] = useState(0)
+    const [displayedChars, setDisplayedChars] = useState(0)
+    const currentWord = rotatingWords[rotatingWordIndex]
+
+    // 打字机效果：逐字显示
+    useEffect(() => {
+        setDisplayedChars(0) // 切换词时重置
+        let charIndex = 0
+        const typeInterval = setInterval(() => {
+            charIndex++
+            setDisplayedChars(charIndex)
+            if (charIndex >= currentWord.length) {
+                clearInterval(typeInterval)
+            }
+        }, 150) // 每个字150ms
+        return () => clearInterval(typeInterval)
+    }, [rotatingWordIndex, currentWord.length])
+
+    // 定时切换关键词
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setRotatingWordIndex(prev => (prev + 1) % rotatingWords.length)
+        }, 2500) // 每2.5秒切换（留时间给打字效果）
+        return () => clearInterval(interval)
+    }, [])
+
+    const rotatingWord = currentWord.slice(0, displayedChars)
 
     // 步骤切换时播放音效
     useEffect(() => {
@@ -296,9 +331,15 @@ export default function AutoExecutionPanel(props: AutoExecutionPanelProps) {
         <div className="auto-idle-container">
             {/* 输入区域 */}
             <div className="auto-idle-input">
-                <h2 className="auto-idle-title">全自动视频生成</h2>
-                <p className="auto-idle-subtitle">粘贴视频链接，一键生成原创数字人视频</p>
+                <div className="auto-idle-header">
+                    <div className="auto-idle-title">
+                        全自动 <span className="rotating-keyword">{rotatingWord}</span> 短视频
+                    </div>
 
+                    <div className="auto-idle-subtitle">
+                        粘贴视频链接，一键生成原创数字人视频
+                    </div>
+                </div>
                 <div className="auto-input-group">
                     <Input
                         placeholder="粘贴抖音、快手等短视频链接"
@@ -370,7 +411,7 @@ export default function AutoExecutionPanel(props: AutoExecutionPanelProps) {
                     刷新
                 </Button>
             </div>
-        </div>
+        </div >
     )
 
     // 渲染执行中状态

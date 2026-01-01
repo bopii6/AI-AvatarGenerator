@@ -5,7 +5,6 @@ import type { DigitalHumanCommunityVideo } from '../../services/digitalHumanComm
 import { toMediaUrl } from '../../utils/mediaUrl'
 
 const LIVE_MODE_KEY = 'digitalHuman.community.liveMode.v1'
-
 const MY_INDUSTRY_KEY = 'digitalHuman.community.myIndustry.v1'
 const UNTAGGED_FILTER = '__untagged__'
 
@@ -79,6 +78,27 @@ function VideoTile(props: {
                 <PlayCircleOutlined style={{ fontSize: 48, color: '#fff', filter: 'drop-shadow(0 0 15px rgba(0,0,0,0.6))' }} />
             </div>
 
+            {/* AI Visual Badge (Always Visible) */}
+            <div
+                style={{
+                    position: 'absolute',
+                    top: 8,
+                    left: 8,
+                    background: 'rgba(0,0,0,0.6)',
+                    backdropFilter: 'blur(4px)',
+                    border: '1px solid rgba(255,255,255,0.2)',
+                    borderRadius: 4,
+                    padding: '2px 6px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    pointerEvents: 'none',
+                }}
+            >
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#00d4aa', boxShadow: '0 0 8px #00d4aa' }} />
+                <span style={{ color: '#fff', fontSize: 10, fontWeight: 600 }}>AI 数字人</span>
+            </div>
+
             {/* Quick Actions (Delete) */}
             <div
                 style={{
@@ -107,16 +127,64 @@ function VideoTile(props: {
     )
 }
 
-export default function DigitalHumanCommunityPanel(props: {
+/**
+ * 社区作品触发器组件
+ * 包含：打开按钮 + 统计标签 + 清空按钮
+ */
+export function DigitalHumanCommunityTrigger(props: {
     items: DigitalHumanCommunityVideo[]
+    onOpen: () => void
+    onClear: () => void
+    industryCount: number
+}) {
+    const { items, onOpen, onClear, industryCount } = props
+    return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Button type="default" icon={<ExpandOutlined />} onClick={onOpen} style={{ borderRadius: 12 }}>
+                社区作品
+            </Button>
+            <Tag color="blue" style={{ marginInlineStart: 0 }}>
+                {items.length}
+            </Tag>
+            {industryCount > 0 && (
+                <Tag
+                    icon={<TagsOutlined />}
+                    color="default"
+                    style={{
+                        marginInlineStart: 0,
+                        border: 'none',
+                        background: 'rgba(255,255,255,0.06)',
+                        borderRadius: 999,
+                        padding: '2px 10px',
+                        color: 'rgba(255,255,255,0.7)',
+                    }}
+                >
+                    已收录 {industryCount} 个行业
+                </Tag>
+            )}
+            <Tooltip title="清空（不删除本地文件，仅移除列表）">
+                <Button size="small" danger onClick={onClear} disabled={items.length === 0}>
+                    清空
+                </Button>
+            </Tooltip>
+        </div>
+    )
+}
+
+/**
+ * 社区作品模态框组件
+ * 包含：模态框的所有逻辑（直播模式、筛选、排序、播放等）
+ */
+export function DigitalHumanCommunityModal(props: {
+    items: DigitalHumanCommunityVideo[]
+    open: boolean
+    onClose: () => void
     onPlayPath: (videoPath: string) => void
     onDelete: (id: string) => void
-    onClear: () => void
     onUpdate: (id: string, patch: Partial<Pick<DigitalHumanCommunityVideo, 'industry' | 'sortOrder' | 'title'>>) => void
     onMove: (id: string, direction: 'up' | 'down') => void
 }) {
-    const { items, onPlayPath, onDelete, onClear, onUpdate, onMove } = props
-    const [open, setOpen] = useState(false)
+    const { items, open, onClose, onPlayPath, onDelete, onUpdate, onMove } = props
     const [playerOpen, setPlayerOpen] = useState(false)
     const [playerItem, setPlayerItem] = useState<DigitalHumanCommunityVideo | null>(null)
     const [query, setQuery] = useState('')
@@ -132,7 +200,8 @@ export default function DigitalHumanCommunityPanel(props: {
         }
     })
     const [myIndustryDraft, setMyIndustryDraft] = useState('')
-    // 直播展示模式
+
+    // 直播展示模式 state
     const [liveMode, setLiveMode] = useState<boolean>(() => {
         try {
             return localStorage.getItem(LIVE_MODE_KEY) === 'true'
@@ -219,11 +288,6 @@ export default function DigitalHumanCommunityPanel(props: {
         return base.filter((it) => `${it.title} ${it.avatarName || ''} ${it.industry || ''}`.toLowerCase().includes(q))
     }, [industryFilter, query, sorted])
 
-    const openModal = () => {
-        setOpen(true)
-        setMyIndustryDraft(myIndustry)
-    }
-
     const saveMyIndustry = (value: string) => {
         const next = String(value || '').trim()
         setMyIndustry(next)
@@ -256,36 +320,6 @@ export default function DigitalHumanCommunityPanel(props: {
 
     return (
         <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Button type="default" icon={<ExpandOutlined />} onClick={openModal} style={{ borderRadius: 12 }}>
-                    社区作品
-                </Button>
-                <Tag color="blue" style={{ marginInlineStart: 0 }}>
-                    {items.length}
-                </Tag>
-                {industryStats.industryCount > 0 && (
-                    <Tag
-                        icon={<TagsOutlined />}
-                        color="default"
-                        style={{
-                            marginInlineStart: 0,
-                            border: 'none',
-                            background: 'rgba(255,255,255,0.06)',
-                            borderRadius: 999,
-                            padding: '2px 10px',
-                            color: 'rgba(255,255,255,0.7)',
-                        }}
-                    >
-                        已收录 {industryStats.industryCount} 个行业
-                    </Tag>
-                )}
-                <Tooltip title="清空（不删除本地文件，仅移除列表）">
-                    <Button size="small" danger onClick={onClear} disabled={items.length === 0}>
-                        清空
-                    </Button>
-                </Tooltip>
-            </div>
-
             <Modal
                 title={
                     liveMode ? (
@@ -319,7 +353,7 @@ export default function DigitalHumanCommunityPanel(props: {
                     )
                 }
                 open={open}
-                onCancel={() => setOpen(false)}
+                onCancel={onClose}
                 footer={null}
                 width={liveMode ? '95vw' : 1120}
                 style={liveMode ? { top: 20 } : undefined}
@@ -331,6 +365,15 @@ export default function DigitalHumanCommunityPanel(props: {
                 {liveMode ? (
                     /* ========== 直播展示模式 ========== */
                     <div className="live-mode-container">
+                        {/* DeepSeek 合作徽章 */}
+                        <div style={{ textAlign: 'center', marginBottom: 16 }}>
+                            <div className="live-mode-deepseek-badge">
+                                <span>联合</span>
+                                <img src="https://chat.deepseek.com/favicon.svg" alt="DeepSeek" className="deepseek-logo" />
+                                <span className="deepseek-text">deepseek</span>
+                                <span>创作</span>
+                            </div>
+                        </div>
                         {/* 超大行业按钮网格 - 核心展示区 */}
                         <div className="live-mode-industry-grid">
                             <div
@@ -668,7 +711,7 @@ export default function DigitalHumanCommunityPanel(props: {
                                     onPlayPath(playerItem.videoPath)
                                     setPlayerOpen(false)
                                     setPlayerItem(null)
-                                    setOpen(false)
+                                    onClose()
                                 }}
                             >
                                 在预览区打开
@@ -706,6 +749,46 @@ export default function DigitalHumanCommunityPanel(props: {
                     ))}
                 </div>
             </Modal>
+        </>
+    )
+}
+
+// 默认导出（为了兼容，可能需要，但我们主要使用命名导出）
+export default function DigitalHumanCommunityPanel(props: {
+    items: DigitalHumanCommunityVideo[]
+    onPlayPath: (videoPath: string) => void
+    onDelete: (id: string) => void
+    onClear: () => void
+    onUpdate: (id: string, patch: Partial<Pick<DigitalHumanCommunityVideo, 'industry' | 'sortOrder' | 'title'>>) => void
+    onMove: (id: string, direction: 'up' | 'down') => void
+}) {
+    // 这是一个组合组件，用于兼容以前的用法
+    const [open, setOpen] = useState(false)
+    const { items, onPlayPath, onDelete, onClear, onUpdate, onMove } = props
+
+    // 计算 industryCount (逻辑复用)
+    const industryCount = useMemo(() => {
+        const set = new Set(items.map((it) => String(it.industry || '').trim()).filter(Boolean))
+        return set.size
+    }, [items])
+
+    return (
+        <>
+            <DigitalHumanCommunityTrigger
+                items={items}
+                onOpen={() => setOpen(true)}
+                onClear={onClear}
+                industryCount={industryCount}
+            />
+            <DigitalHumanCommunityModal
+                items={items}
+                open={open}
+                onClose={() => setOpen(false)}
+                onPlayPath={onPlayPath}
+                onDelete={onDelete}
+                onUpdate={onUpdate}
+                onMove={onMove}
+            />
         </>
     )
 }
